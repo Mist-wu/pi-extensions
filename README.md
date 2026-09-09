@@ -32,15 +32,27 @@ Use these native Pi tools for web debugging, UI validation, and browser-assisted
 
 ## 📦 Install
 
-Build and load this checkout:
+Install from GitHub:
+
+```bash
+pi install git:github.com/Mist-wu/pi-chrome-devtools
+```
+
+Try it for one session without installing:
+
+```bash
+pi -e git:github.com/Mist-wu/pi-chrome-devtools
+```
+
+Or load a local checkout:
 
 ```bash
 npm install
-npm run build
 pi -e .
 ```
 
-The package declares `dist/index.ts`, so build before loading the package directory.
+The package declares `src/index.ts`, which Pi's Jiti runtime loads directly, so a checkout needs no
+build step to run. `npm run build` produces the bundled `dist/` runtime used for npm packaging.
 
 Pi extensions run with your user permissions.
 Review third-party extension source before installing it.
