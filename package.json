@@ -1,10 +1,9 @@
 {
-	"name": "pi-chrome-devtools",
+	"name": "@mist-wu/pi-chrome-devtools",
 	"version": "0.1.0",
 	"description": "Pi extension that exposes Chrome DevTools Protocol tools.",
 	"type": "module",
 	"license": "MIT",
-	"private": true,
 	"keywords": [
 		"pi-package",
 		"pi-extension",
@@ -14,6 +13,14 @@
 		"cdp",
 		"webmcp"
 	],
+	"homepage": "https://github.com/Mist-wu/pi-chrome-devtools#readme",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/Mist-wu/pi-chrome-devtools.git"
+	},
+	"bugs": {
+		"url": "https://github.com/Mist-wu/pi-chrome-devtools/issues"
+	},
 	"files": [
 		"src",
 		"dist",
@@ -25,6 +32,9 @@
 		"extensions": [
 			"./src/index.ts"
 		]
+	},
+	"publishConfig": {
+		"access": "public"
 	},
 	"scripts": {
 		"build": "node scripts/build-runtime.mjs",

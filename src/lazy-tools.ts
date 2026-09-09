@@ -13,7 +13,7 @@ import {
 
 export const CHROME_DEVTOOLS_LOAD_TOOL_NAME = "chrome_devtools_load";
 
-const AVAILABLE_TOOLS_STORE = Symbol.for("@narumitw/pi-chrome-devtools.available-tools-store");
+const AVAILABLE_TOOLS_STORE = Symbol.for("@mist-wu/pi-chrome-devtools.available-tools-store");
 type ChromeDevtoolsGlobal = typeof globalThis & {
 	[AVAILABLE_TOOLS_STORE]?: WeakMap<ExtensionAPI, Set<ChromeDevToolsToolName>>;
 };

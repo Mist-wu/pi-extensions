@@ -1,4 +1,20 @@
-# @narumitw/pi-chrome-devtools
+# @mist-wu/pi-chrome-devtools
+
+## 0.1.0
+
+Standalone fork of `@narumitw/pi-chrome-devtools` 0.53.1 (MIT).
+
+- Pooled CDP sessions: one connection per page for the whole Pi session, each domain enabled once.
+- Continuous console, exception, and network recording into bounded ring buffers.
+- Nine new tools (5 -> 14 core): snapshot, click, fill, press, wait_for, console, network, emulate, cdp_send.
+- Real `Input` events for clicking and typing, verified against `event.isTrusted`.
+- End-to-end smoke run against a real headless Chrome (`npm run smoke:e2e`).
+
+The history below is upstream's, kept for provenance.
+
+---
+
+# @narumitw/pi-chrome-devtools (upstream history)
 
 ## 0.53.1
 

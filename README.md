@@ -1,6 +1,6 @@
 # 🌐 pi-chrome-devtools — Inspect and Control Chrome from Pi
 
-[![Pi extension](https://img.shields.io/badge/Pi-extension-blue)](https://pi.dev) [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
+[![npm](https://img.shields.io/npm/v/@mist-wu/pi-chrome-devtools)](https://www.npmjs.com/package/@mist-wu/pi-chrome-devtools) [![Pi extension](https://img.shields.io/badge/Pi-extension-blue)](https://pi.dev) [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 
 Drive and debug Chrome from Pi through the Chrome DevTools Protocol: inspect tabs, navigate, snapshot
 the DOM, click and type with real input events, read the console and network log, emulate devices,
@@ -32,7 +32,13 @@ Use these native Pi tools for web debugging, UI validation, and browser-assisted
 
 ## 📦 Install
 
-Install from GitHub:
+Install from npm:
+
+```bash
+pi install npm:@mist-wu/pi-chrome-devtools
+```
+
+Or from GitHub, which always tracks `main`:
 
 ```bash
 pi install git:github.com/Mist-wu/pi-chrome-devtools
@@ -41,7 +47,7 @@ pi install git:github.com/Mist-wu/pi-chrome-devtools
 Try it for one session without installing:
 
 ```bash
-pi -e git:github.com/Mist-wu/pi-chrome-devtools
+pi -e npm:@mist-wu/pi-chrome-devtools
 ```
 
 Or load a local checkout:
