@@ -43,6 +43,32 @@ const port = server.address().port;
 const pageUrl = `http://127.0.0.1:${port}/`;
 
 const profile = mkdtempSync(path.join(os.tmpdir(), "pi-cdp-smoke-"));
+
+let cleanedUp = false;
+function cleanup() {
+	if (cleanedUp) return;
+	cleanedUp = true;
+	try {
+		chrome?.kill("SIGKILL");
+	} catch {}
+	try {
+		server.close();
+	} catch {}
+	rmSync(profile, { recursive: true, force: true });
+}
+// A crash or an interrupt must not leave a headless Chrome and its profile behind.
+process.on("exit", cleanup);
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+	process.on(signal, () => {
+		cleanup();
+		process.exit(130);
+	});
+}
+process.on("uncaughtException", (error) => {
+	console.error(error);
+	cleanup();
+	process.exit(1);
+});
 const chrome = spawn(
 	process.env.PI_CHROME_DEVTOOLS_BROWSER ??
 		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -333,9 +359,7 @@ try {
 	check("smoke run completed", false, String(error?.stack ?? error));
 } finally {
 	closeAllSessions();
-	chrome.kill("SIGKILL");
-	server.close();
-	rmSync(profile, { recursive: true, force: true });
+	cleanup();
 }
 
 const failed = results.filter((r) => !r.ok);
