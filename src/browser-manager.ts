@@ -1,6 +1,6 @@
 import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { constants } from "node:fs";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
@@ -30,6 +30,7 @@ interface BrowserSpawnOptions {
 
 export interface BrowserManagerOperations {
 	access(path: string, mode: number): Promise<void>;
+	mkdir(path: string, options: { recursive: true }): Promise<string | undefined>;
 	mkdtemp(prefix: string): Promise<string>;
 	readFile(path: string, encoding: "utf8"): Promise<string>;
 	rm(path: string, options: { recursive: true; force: true }): Promise<void>;
@@ -42,6 +43,7 @@ export interface BrowserManagerOperations {
 
 const DEFAULT_BROWSER_MANAGER_OPERATIONS: BrowserManagerOperations = {
 	access,
+	mkdir: (path, options) => mkdir(path, options),
 	mkdtemp,
 	readFile,
 	rm: (path, options) => rm(path, options),
@@ -79,10 +81,12 @@ function runtimeBrowserSettings(): EffectiveBrowserSettings {
 		portConfigured: state.portConfigured,
 		autoLaunchEnabled: state.autoLaunchEnabled,
 		...(state.browserExecutable ? { executablePath: state.browserExecutable } : {}),
+		...(state.browserUserDataDir ? { userDataDir: state.browserUserDataDir } : {}),
 		extensionPaths: [...state.extensionPaths],
 		endpointSource: state.endpointSource,
 		autoLaunchSource: state.autoLaunchSource,
 		executablePathSource: state.browserExecutableSource,
+		userDataDirSource: state.browserUserDataDirSource,
 		extensionPathsSource: state.extensionPathsSource,
 	};
 }
@@ -121,6 +125,10 @@ export function browserSettingsForOwner(owner?: object) {
 
 export function managedBrowserExtensionPaths(owner?: object) {
 	return browserSettingsForOwner(owner).extensionPaths;
+}
+
+export function managedBrowserUserDataDir(owner?: object) {
+	return browserSettingsForOwner(owner).userDataDir;
 }
 
 export function managedBrowserExtensionPathsSource(owner?: object) {
@@ -448,9 +456,21 @@ async function launchBrowserCandidate(
 	owner?: object,
 ) {
 	throwIfBrowserLaunchCancelled(generation, signal, owner);
-	const userDataDir = await browserManagerOperations.mkdtemp(
-		join(tmpdir(), MANAGED_BROWSER_PROFILE_PREFIX),
-	);
+	// A configured profile is the user's: reuse it so signed-in sessions survive, and never delete
+	// it. Without one, fall back to a throwaway directory that shutdown cleans up.
+	const configuredUserDataDir = managedBrowserUserDataDir(owner);
+	const persistentProfile = configuredUserDataDir !== undefined;
+	const userDataDir = configuredUserDataDir ?? (await createEphemeralProfileDir());
+	if (persistentProfile) {
+		await browserManagerOperations.mkdir(userDataDir, { recursive: true });
+		// A reused profile still holds the DevToolsActivePort file from its previous run. Port
+		// discovery reads the first valid port it finds, so leaving it in place makes the next
+		// launch attach to a port that died with the last browser. Clear it and let this launch
+		// write its own.
+		await browserManagerOperations
+			.rm(join(userDataDir, DEVTOOLS_ACTIVE_PORT_FILE), { recursive: true, force: true })
+			.catch(() => undefined);
+	}
 	let managedBrowser: ManagedBrowser | undefined;
 	try {
 		throwIfBrowserLaunchCancelled(generation, signal, owner);
@@ -469,6 +489,7 @@ async function launchBrowserCandidate(
 		const launchedBrowser: ManagedBrowser = {
 			process: child,
 			userDataDir,
+			persistentProfile,
 			exited: false,
 			ready: false,
 			ownerGeneration: generation,
@@ -512,13 +533,17 @@ async function launchBrowserCandidate(
 		launchedBrowser.ready = true;
 	} catch (error) {
 		if (managedBrowser) await shutdownManagedBrowser(managedBrowser, { awaitLaunch: false, owner });
-		else {
+		else if (!persistentProfile) {
 			await browserManagerOperations
 				.rm(userDataDir, { recursive: true, force: true })
 				.catch(() => undefined);
 		}
 		throw error;
 	}
+}
+
+function createEphemeralProfileDir() {
+	return browserManagerOperations.mkdtemp(join(tmpdir(), MANAGED_BROWSER_PROFILE_PREFIX));
 }
 
 export function buildManagedBrowserLaunchArguments(
@@ -689,9 +714,11 @@ async function cleanupManagedBrowser(managedBrowser: ManagedBrowser, owner?: obj
 			);
 		});
 	}
-	await browserManagerOperations
-		.rm(managedBrowser.userDataDir, { recursive: true, force: true })
-		.catch(() => undefined);
+	if (!managedBrowser.persistentProfile) {
+		await browserManagerOperations
+			.rm(managedBrowser.userDataDir, { recursive: true, force: true })
+			.catch(() => undefined);
+	}
 	if (!managedBrowserPortConfigured(owner) && managedBrowser.port === managedBrowserPort(owner)) {
 		setManagedBrowserPort(owner, managedBrowserConfiguredPort(owner));
 	}

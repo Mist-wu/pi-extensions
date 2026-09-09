@@ -33,6 +33,7 @@ export interface UserBrowserSettings {
 	endpoint?: string;
 	autoLaunch?: boolean;
 	executablePath?: string;
+	userDataDir?: string;
 	extensionPaths?: string[];
 }
 
@@ -40,6 +41,7 @@ export interface BrowserSettingsPatch {
 	endpoint?: string | null;
 	autoLaunch?: boolean | null;
 	executablePath?: string | null;
+	userDataDir?: string | null;
 }
 
 export interface EffectiveBrowserSettings {
@@ -50,10 +52,17 @@ export interface EffectiveBrowserSettings {
 	portConfigured: boolean;
 	autoLaunchEnabled: boolean;
 	executablePath?: string;
+	/**
+	 * Where a managed browser keeps its profile. Unset means a temporary directory that is deleted
+	 * on shutdown, so nothing the agent does in that browser survives. Set means the directory is
+	 * reused and never deleted, so signed-in sessions persist across Pi sessions.
+	 */
+	userDataDir?: string;
 	extensionPaths: string[];
 	endpointSource: BrowserSettingsSource;
 	autoLaunchSource: BrowserSettingsSource;
 	executablePathSource: BrowserSettingsSource;
+	userDataDirSource: BrowserSettingsSource;
 	extensionPathsSource: BrowserSettingsSource;
 }
 
@@ -241,6 +250,7 @@ function resolveEffectiveBrowser(
 				? (user.autoLaunch ?? true)
 				: environmentAutoLaunch !== "0",
 		...(executablePath ? { executablePath } : {}),
+		...(user.userDataDir ? { userDataDir: user.userDataDir } : {}),
 		extensionPaths: [...extensionPaths],
 		endpointSource,
 		autoLaunchSource:
@@ -254,6 +264,7 @@ function resolveEffectiveBrowser(
 			: user.executablePath
 				? "user"
 				: "default",
+		userDataDirSource: user.userDataDir ? "user" : "default",
 		extensionPathsSource: project?.extensionPaths
 			? "project"
 			: user.extensionPaths
@@ -321,7 +332,7 @@ function projectOwnedSettingsWarnings(
 	if (scope !== "project") return [];
 	const browser = isRecord(document.browser) ? document.browser : undefined;
 	const warnings = browser
-		? ["endpoint", "autoLaunch", "executablePath"]
+		? ["endpoint", "autoLaunch", "executablePath", "userDataDir"]
 				.filter((field) => browser[field] !== undefined)
 				.map(
 					(field) =>
@@ -397,6 +408,15 @@ async function normalizeBrowserSection(
 			throw new Error("browser.executablePath in user settings must be absolute");
 		}
 		normalized.executablePath = resolve(browser.executablePath);
+	}
+	if (scope === "user" && browser.userDataDir !== undefined) {
+		if (typeof browser.userDataDir !== "string" || browser.userDataDir.length === 0) {
+			throw new Error("expected browser.userDataDir to be a non-empty absolute path");
+		}
+		if (!isAbsolute(browser.userDataDir)) {
+			throw new Error("browser.userDataDir in user settings must be absolute");
+		}
+		normalized.userDataDir = resolve(browser.userDataDir);
 	}
 
 	if (browser.extensionPaths !== undefined) {
@@ -569,7 +589,7 @@ export function saveBrowserSettings(
 ): Promise<void> {
 	return queueSettingsMutation(async (current) => {
 		const browser = isRecord(current.browser) ? { ...current.browser } : {};
-		for (const field of ["endpoint", "autoLaunch", "executablePath"] as const) {
+		for (const field of ["endpoint", "autoLaunch", "executablePath", "userDataDir"] as const) {
 			const value = patch[field];
 			if (value === undefined) continue;
 			if (value === null) delete browser[field];

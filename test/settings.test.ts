@@ -478,3 +478,58 @@ test("pending global saves finish before a dependent settings read", async () =>
 		assert.deepEqual(loaded.settings?.tools, [LIST_PAGES_TOOL]);
 	});
 });
+
+test("browser.userDataDir is a machine-owned absolute path that projects cannot set", async () => {
+	await withSettingsFixture(async ({ agentDir, cwd }) => {
+		const profile = path.join(agentDir, "chrome-profile");
+		writeFileSync(settingsFilePath(), `${JSON.stringify({ browser: { userDataDir: profile } })}\n`);
+		writeFileSync(
+			projectSettingsFilePath(cwd),
+			`${JSON.stringify({ browser: { userDataDir: path.join(cwd, "hijacked") } })}\n`,
+		);
+
+		const loaded = await loadSettings({ cwd, projectTrusted: true });
+
+		assert.equal(loaded.effectiveBrowser.userDataDir, profile);
+		assert.equal(loaded.effectiveBrowser.userDataDirSource, "user");
+		assert.match(loaded.warnings.join("\n"), /project browser\.userDataDir ignored/i);
+	});
+});
+
+test("browser.userDataDir defaults to unset, so managed profiles stay temporary", async () => {
+	await withSettingsFixture(async ({ cwd }) => {
+		const loaded = await loadSettings({ cwd, projectTrusted: true });
+		assert.equal(loaded.effectiveBrowser.userDataDir, undefined);
+		assert.equal(loaded.effectiveBrowser.userDataDirSource, "default");
+	});
+});
+
+test("a relative browser.userDataDir is rejected instead of resolving somewhere surprising", async () => {
+	await withSettingsFixture(async ({ cwd }) => {
+		writeFileSync(
+			settingsFilePath(),
+			`${JSON.stringify({ browser: { userDataDir: "./chrome-profile" } })}\n`,
+		);
+		const loaded = await loadSettings({ cwd, projectTrusted: true });
+		assert.equal(loaded.effectiveBrowser.userDataDir, undefined);
+		assert.match(loaded.warnings.join("\n"), /userDataDir/i);
+	});
+});
+
+test("saving and clearing browser.userDataDir round-trips through the settings file", async () => {
+	await withSettingsFixture(async ({ agentDir, cwd }) => {
+		const profile = path.join(agentDir, "chrome-profile");
+
+		await saveBrowserSettings({ userDataDir: profile });
+		let loaded = await loadSettings({ cwd, projectTrusted: true });
+		assert.equal(loaded.effectiveBrowser.userDataDir, profile);
+
+		await saveBrowserSettings({ userDataDir: null });
+		loaded = await loadSettings({ cwd, projectTrusted: true });
+		assert.equal(loaded.effectiveBrowser.userDataDir, undefined);
+		assert.equal(
+			JSON.parse(readFileSync(settingsFilePath(), "utf8")).browser?.userDataDir,
+			undefined,
+		);
+	});
+});

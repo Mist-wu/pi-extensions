@@ -239,7 +239,7 @@ For example, this partial document attaches to a user-started browser without la
 }
 ```
 
-The same file owns `browser.endpoint`, `browser.autoLaunch`, `browser.executablePath`, `browser.extensionPaths`, and user-only `webmcp.enabled`.
+The same file owns `browser.endpoint`, `browser.autoLaunch`, `browser.executablePath`, `browser.userDataDir`, `browser.extensionPaths`, and user-only `webmcp.enabled`.
 Browser connection fields and `webmcp.enabled` are machine-owned user settings; trusted project files may replace only `browser.extensionPaths`.
 Confirmed menu changes apply before the next browser connection and close only an extension-owned managed browser.
 Manual JSON edits and unpacked-extension changes apply after `/reload` or session replacement.
@@ -256,10 +256,45 @@ The first subsequent settings save writes the canonical file.
 If both files exist, `pi-chrome-devtools.json` wins and the legacy file is ignored.
 The legacy filename is deprecated and will be removed in a future major release.
 
+### Keeping a browser signed in
+
+By default a managed browser gets a temporary profile that is deleted when the session ends, so
+anything the agent signs into is gone next time. Point `browser.userDataDir` at a directory to reuse
+one profile instead:
+
+```json
+{
+  "browser": {
+    "userDataDir": "/Users/you/.pi/agent/chrome-profile"
+  }
+}
+```
+
+That directory is created if missing and is never deleted, so signing in once carries across
+sessions. It is also a profile you can open yourself:
+
+```bash
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --remote-debugging-port=9222 \
+  --user-data-dir="$HOME/.pi/agent/chrome-profile"
+```
+
+The extension probes the endpoint before launching anything, so a browser you started this way is
+simply attached to, and the pages you have open are the pages the tools see. Close that browser
+before letting the extension launch its own on the same profile: Chrome allows only one process per
+profile directory, and the second one exits immediately.
+
+`browser.userDataDir` is a machine-owned user setting like the other connection fields, so project
+files cannot point it somewhere else.
+
 ## 🔒 Security and privacy
 
 A CDP connection can inspect and change browser content, execute JavaScript, and access the selected browser profile's authenticated pages.
 Connect only to trusted endpoints and profiles.
+
+The default temporary profile is what keeps an agent-driven browser separate from your own signed-in
+sessions. Setting `browser.userDataDir` deliberately gives that up: whatever you sign into in that
+profile, the agent can then act as. It stays opt-in for that reason.
 
 The extension never closes an external browser.
 It closes only managed browser processes that it started and removes their temporary profiles on a best-effort basis.

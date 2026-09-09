@@ -34,8 +34,10 @@ export interface ChromeDevToolsState {
 	endpointSource: EffectiveBrowserSettings["endpointSource"];
 	autoLaunchSource: EffectiveBrowserSettings["autoLaunchSource"];
 	browserExecutable?: string;
+	browserUserDataDir?: string;
 	extensionPaths: string[];
 	browserExecutableSource: EffectiveBrowserSettings["executablePathSource"];
+	browserUserDataDirSource: EffectiveBrowserSettings["userDataDirSource"];
 	extensionPathsSource: EffectiveBrowserSettings["extensionPathsSource"];
 	settingsFilePath?: string;
 	projectSettingsFilePath?: string;
@@ -53,6 +55,8 @@ export interface ChromeDevToolsState {
 export interface ManagedBrowser {
 	process: ChildProcess;
 	userDataDir: string;
+	/** A user-configured profile is reused across sessions, so shutdown must not delete it. */
+	persistentProfile: boolean;
 	port?: number;
 	exited: boolean;
 	ready: boolean;
@@ -92,6 +96,7 @@ export const state: ChromeDevToolsState = {
 	autoLaunchSource: "default",
 	extensionPaths: [],
 	browserExecutableSource: "default",
+	browserUserDataDirSource: "default",
 	extensionPathsSource: "default",
 	projectSettingsTrusted: false,
 	shuttingDown: false,
@@ -204,8 +209,10 @@ export function applyRuntimeBrowserSettings(
 	state.endpointSource = browser.endpointSource;
 	state.autoLaunchSource = browser.autoLaunchSource;
 	state.browserExecutable = browser.executablePath;
+	state.browserUserDataDir = browser.userDataDir;
 	state.extensionPaths = [...browser.extensionPaths];
 	state.browserExecutableSource = browser.executablePathSource;
+	state.browserUserDataDirSource = browser.userDataDirSource;
 	state.extensionPathsSource = browser.extensionPathsSource;
 	state.settingsFilePath = paths.user;
 	state.projectSettingsFilePath = paths.project;

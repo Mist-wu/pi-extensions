@@ -44,8 +44,10 @@ function resetRuntime(overrides: Partial<typeof state> = {}) {
 		endpointSource: "default",
 		autoLaunchSource: "default",
 		browserExecutable: "/test/chrome-for-testing",
+		browserUserDataDir: undefined,
 		extensionPaths: ["/test/extension-a", "/test/extension-b"],
 		browserExecutableSource: "user",
+		browserUserDataDirSource: "default",
 		extensionPathsSource: "user",
 		managedBrowser: undefined,
 		launchPromise: undefined,
@@ -67,12 +69,21 @@ function successfulOperations(
 	const calls = {
 		spawn: [] as Array<{ executable: string; args: string[]; shell: boolean | undefined }>,
 		fetch: [] as string[],
+		mkdir: [] as string[],
+		mkdtemp: [] as string[],
 		rm: [] as string[],
 		version: [] as string[],
 	};
 	const restore = setBrowserManagerOperationsForTests({
 		access: async () => undefined,
-		mkdtemp: async () => "/tmp/test-managed-profile",
+		mkdir: async (target) => {
+			calls.mkdir.push(target);
+			return target;
+		},
+		mkdtemp: async (prefix) => {
+			calls.mkdtemp.push(prefix);
+			return "/tmp/test-managed-profile";
+		},
 		readFile: async () => "9333\n/devtools/browser/test\n",
 		rm: async (target) => {
 			calls.rm.push(target);
@@ -531,6 +542,105 @@ test("no-extension mode preserves attach-first behavior", async () => {
 		await ensureDevToolsEndpoint();
 		assert.equal(calls.fetch.length, 1);
 		assert.equal(calls.spawn.length, 0);
+	} finally {
+		restore();
+	}
+});
+
+test("a configured profile is created, reused, and kept when the browser shuts down", async () => {
+	resetRuntime({ browserUserDataDir: "/profiles/pi-chrome", browserUserDataDirSource: "user" });
+	const { child, calls, restore } = successfulOperations();
+	try {
+		await ensureDevToolsEndpoint();
+
+		assert.deepEqual(calls.mkdir, ["/profiles/pi-chrome"]);
+		assert.deepEqual(calls.mkdtemp, [], "a configured profile must not allocate a temp directory");
+		assert.equal(state.managedBrowser?.userDataDir, "/profiles/pi-chrome");
+		assert.equal(state.managedBrowser?.persistentProfile, true);
+		assert.ok(
+			calls.spawn[0]?.args.includes("--user-data-dir=/profiles/pi-chrome"),
+			"expected the configured profile on the command line",
+		);
+
+		const managed = state.managedBrowser;
+		assert.ok(managed);
+		await shutdownManagedBrowser(managed);
+
+		assert.equal(child.killCalls.length, 1, "the browser itself is still stopped");
+		assert.ok(
+			!calls.rm.includes("/profiles/pi-chrome"),
+			"a profile the user owns must survive shutdown",
+		);
+	} finally {
+		restore();
+	}
+});
+
+test("an unconfigured profile stays temporary and is removed on shutdown", async () => {
+	resetRuntime();
+	const { calls, restore } = successfulOperations();
+	try {
+		await ensureDevToolsEndpoint();
+
+		assert.equal(calls.mkdtemp.length, 1);
+		assert.deepEqual(calls.mkdir, [], "a throwaway profile needs no explicit directory creation");
+		assert.equal(state.managedBrowser?.userDataDir, "/tmp/test-managed-profile");
+		assert.equal(state.managedBrowser?.persistentProfile, false);
+
+		const managed = state.managedBrowser;
+		assert.ok(managed);
+		await shutdownManagedBrowser(managed);
+		assert.deepEqual(calls.rm, ["/tmp/test-managed-profile"]);
+	} finally {
+		restore();
+	}
+});
+
+test("a failed launch never deletes a configured profile", async () => {
+	resetRuntime({ browserUserDataDir: "/profiles/pi-chrome", browserUserDataDirSource: "user" });
+	const child = new FakeChildProcess();
+	const removed: string[] = [];
+	const restore = setBrowserManagerOperationsForTests({
+		access: async () => undefined,
+		inspectBrowserVersion: async () => "Chromium 149.0.0.0",
+		isPortAvailable: async () => true,
+		mkdir: async (target) => target,
+		mkdtemp: async () => {
+			throw new Error("a configured profile must not allocate a temporary directory");
+		},
+		rm: async (target) => {
+			removed.push(target);
+		},
+		spawn: () => {
+			queueMicrotask(() => child.emit("error", new Error("spawn failed")));
+			return child as unknown as ChildProcess;
+		},
+	});
+	try {
+		await assert.rejects(ensureDevToolsEndpoint(), /spawn failed/);
+		assert.equal(state.managedBrowser, undefined);
+		assert.ok(
+			!removed.includes("/profiles/pi-chrome"),
+			"a launch failure must not destroy the user's signed-in profile",
+		);
+	} finally {
+		restore();
+	}
+});
+
+test("a reused profile drops its previous DevToolsActivePort before relaunching", async () => {
+	resetRuntime({ browserUserDataDir: "/profiles/pi-chrome", browserUserDataDirSource: "user" });
+	const { calls, restore } = successfulOperations();
+	try {
+		await ensureDevToolsEndpoint();
+
+		// Without this, port discovery reads the port the previous browser wrote and waits on a
+		// socket that died with it, which is only reachable on the second launch of a profile.
+		assert.deepEqual(calls.rm, ["/profiles/pi-chrome/DevToolsActivePort"]);
+		assert.ok(
+			calls.rm.every((target) => target !== "/profiles/pi-chrome"),
+			"clearing the port file must not touch the profile itself",
+		);
 	} finally {
 		restore();
 	}
