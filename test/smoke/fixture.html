@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>CDP Smoke</title></head>
+<body>
+  <h1>Smoke Test</h1>
+  <form id="login" onsubmit="event.preventDefault(); document.getElementById('out').textContent = 'submitted:' + document.getElementById('email').value;">
+    <label for="email">Email address</label>
+    <input id="email" name="email" type="text" placeholder="you@example.com" value="prefilled">
+    <button id="go" type="submit">Sign in</button>
+  </form>
+  <button id="counter" type="button" onclick="window.__clicks = (window.__clicks||0)+1; document.getElementById('count').textContent = window.__clicks;">Click me</button>
+  <span id="count">0</span>
+  <a href="/reset" id="forgot">Forgot password?</a>
+  <input id="chk" type="checkbox" checked>
+  <div id="out"></div>
+  <div id="late" style="display:none">appeared</div>
+  <script>
+    console.warn("boot warning", 42);
+    setTimeout(() => { document.getElementById('late').style.display = 'block'; }, 300);
+    setTimeout(() => { throw new Error("deliberate smoke failure"); }, 50);
+    fetch("/missing-endpoint").catch(() => {});
+  </script>
+</body>
+</html>

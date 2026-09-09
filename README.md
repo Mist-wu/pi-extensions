@@ -1,14 +1,26 @@
 # 🌐 pi-chrome-devtools — Inspect and Control Chrome from Pi
 
-[![npm](https://img.shields.io/npm/v/@narumitw/pi-chrome-devtools)](https://www.npmjs.com/package/@narumitw/pi-chrome-devtools) [![Pi extension](https://img.shields.io/badge/Pi-extension-blue)](https://pi.dev) [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
+[![Pi extension](https://img.shields.io/badge/Pi-extension-blue)](https://pi.dev) [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 
-Inspect browser tabs, navigate pages, evaluate JavaScript, and capture screenshots from Pi through the Chrome DevTools Protocol.
+Drive and debug Chrome from Pi through the Chrome DevTools Protocol: inspect tabs, navigate, snapshot
+the DOM, click and type with real input events, read the console and network log, emulate devices,
+and reach any protocol domain directly.
 Use these native Pi tools for web debugging, UI validation, and browser-assisted investigation without an MCP server.
-The design is inspired by [`chrome-devtools-mcp`](https://github.com/ChromeDevTools/chrome-devtools-mcp), but compatibility is not guaranteed.
+
+> Derived from [`@narumitw/pi-chrome-devtools`](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-chrome-devtools)
+> 0.53.1 (MIT), itself inspired by [`chrome-devtools-mcp`](https://github.com/ChromeDevTools/chrome-devtools-mcp).
+> This fork adds pooled CDP sessions, console and network recording, real input, and a raw protocol escape hatch.
+> Compatibility with either upstream is not guaranteed.
 
 ## ✨ Features
 
 - Lists and selects inspectable pages, navigates URLs, evaluates JavaScript, and captures PNG screenshots.
+- Keeps one pooled CDP connection per page for the whole Pi session, enabling each domain at most once.
+- Records console messages, uncaught exceptions, and network requests continuously, so a later tool call can read back what happened before it ran.
+- Drives the page with trusted `Input` events for clicks, typing, and keyboard shortcuts, which pages cannot distinguish from a user.
+- Captures a ref-addressable text snapshot of the page that costs a fraction of a screenshot.
+- Emulates device viewports, user agents, colour scheme, network throttling, and CPU slowdown.
+- Exposes any Chrome DevTools Protocol command for domains the dedicated tools do not wrap.
 - Reuses an existing CDP endpoint or launches an isolated Chromium-family browser on first use.
 - Recovers from stale page selections and explains browser startup or endpoint failures.
 - Loads explicitly approved unpacked extensions only in an extension-owned Chrome for Testing or Chromium process.
@@ -20,26 +32,15 @@ The design is inspired by [`chrome-devtools-mcp`](https://github.com/ChromeDevTo
 
 ## 📦 Install
 
-Install persistently:
+Build and load this checkout:
 
 ```bash
-pi install npm:@narumitw/pi-chrome-devtools
+npm install
+npm run build
+pi -e .
 ```
 
-Run once from npm:
-
-```bash
-pi -e npm:@narumitw/pi-chrome-devtools
-```
-
-Build and run a local checkout from the repository root:
-
-```bash
-npm --workspace @narumitw/pi-chrome-devtools run build
-pi -e ./packages/pi-chrome-devtools
-```
-
-The package declares `dist/index.ts`, so build a local checkout before loading its package directory.
+The package declares `dist/index.ts`, so build before loading the package directory.
 
 Pi extensions run with your user permissions.
 Review third-party extension source before installing it.
@@ -77,20 +78,66 @@ See [WebMCP setup and troubleshooting](./docs/browser-setup.md#experimental-webm
 
 ## 🛠️ Tools
 
+Navigation and inspection:
+
 - `chrome_devtools_load` — find and load browser capabilities relevant to a task.
 - `chrome_devtools_list_pages` — list inspectable Chrome tabs/pages.
 - `chrome_devtools_select_page` — select the active page for later tool calls.
 - `chrome_devtools_navigate` — navigate a page to a URL; if no page exists, create one first.
 - `chrome_devtools_evaluate` — evaluate JavaScript in the selected page.
 - `chrome_devtools_screenshot` — capture a PNG screenshot and save it as a PNG file.
+- `chrome_devtools_snapshot` — capture a compact outline of the page's interactive elements with stable `e1`, `e2`, … refs.
+
+Interaction, with real browser input events:
+
+- `chrome_devtools_click` — click, double-click, right-click, or hover an element (by ref, selector, or coordinates).
+- `chrome_devtools_fill` — focus a field, clear it, type into it, and optionally submit.
+- `chrome_devtools_press` — send a key or chord such as `Enter`, `Escape`, or `Control+a`.
+- `chrome_devtools_wait_for` — wait for a selector, text, or expression instead of guessing at a sleep.
+
+Debugging:
+
+- `chrome_devtools_console` — read recorded console messages and uncaught exceptions, filtered by level.
+- `chrome_devtools_network` — list recorded requests, filter them, and fetch one response body by id.
+- `chrome_devtools_emulate` — emulate a device viewport, user agent, colour scheme, network preset, or CPU slowdown.
+- `chrome_devtools_cdp_send` — send any CDP command, for `Debugger`, `Profiler`, `Storage`, `Accessibility`, `Fetch`, and the rest.
+
+Experimental WebMCP:
+
 - `chrome_devtools_webmcp_list_tools` — list bounded frame-aware WebMCP descriptors from the selected page when experimental WebMCP is enabled.
 - `chrome_devtools_webmcp_call_tool` — invoke one listed page tool after exact identity revalidation and user confirmation.
 
+### Snapshots and refs
+
+`chrome_devtools_snapshot` registers each element it reports in the page and returns a short ref for it:
+
+```text
+Sign in — https://example.com/login
+14 elements
+e1 heading "Sign in" (h1)
+e2 textbox "Email address" value="prefilled" (#email)
+e3 button "Sign in" (#go)
+e4 link "Forgot password?" -> /reset (a:nth-of-type(1))
+```
+
+Pass those refs to `chrome_devtools_click` and `chrome_devtools_fill`. A ref whose element has left
+the document is rejected with a message telling the agent to take a fresh snapshot, rather than
+silently acting on the wrong node. Refs are per-snapshot: taking a new one renumbers them.
+
+### Recording and session lifetime
+
+Opening a page session enables `Page`, `Runtime`, `Log`, and `Network`, and starts recording. Both
+recorders are bounded ring buffers (500 entries each) and report how many older entries they dropped.
+Sessions stay open for the Pi session, are swept after 5 minutes idle, and are closed on session
+replacement and shutdown. Recording begins when the session opens, so anything logged before the
+first browser tool call in a session is not captured — navigate through
+`chrome_devtools_navigate` if you need a full page load in the log.
+
 ### Tool exposure
 
-The extension registers eight tools: one loader, five stable DevTools capabilities, and two fixed experimental WebMCP gateways.
+The extension registers seventeen tools: one loader, fourteen stable DevTools capabilities, and two fixed experimental WebMCP gateways.
 With native deferred-tool support, only `chrome_devtools_load` starts active.
-The loader accepts a task-oriented `query`, matches it against the five stable capabilities plus enabled WebMCP gateways, and adds matching available tools without removing any active Pi tool.
+The loader accepts a task-oriented `query`, matches it against the fourteen stable capabilities plus enabled WebMCP gateways, and adds matching available tools without removing any active Pi tool.
 Loaded capability tools remain active for the rest of the session unless the user makes them unavailable through `/chrome-devtools`.
 
 Pi uses native deferred tool references on compatible Anthropic models, native additional-tools or tool-search loading on compatible OpenAI and Codex Responses models, and native Kimi loading on compatible OpenAI Chat Completions models.
@@ -214,18 +261,38 @@ Screenshot output is restricted to the current working directory or OS temporary
 ## 🗂️ Package layout
 
 ```text
-packages/pi-chrome-devtools/
-├── src/                               # Authoritative implementation and helpers
+pi-chrome-devtools/
+├── src/
 │   ├── index.ts                       # Thin Pi entrypoint
-│   └── chrome-devtools.ts             # Browser tools and command orchestration
+│   ├── chrome-devtools.ts             # Registration, commands, session lifecycle
+│   ├── cdp-client.ts                  # WebSocket CDP transport
+│   ├── cdp-session.ts                 # Pooled sessions, console and network recorders
+│   ├── page-scripts.ts                # Scripts evaluated inside the inspected page
+│   ├── tools.ts                       # Navigation and inspection tools
+│   ├── advanced-tools.ts              # Snapshot, input, wait, console, network, emulate, raw CDP
+│   ├── browser-manager.ts             # Endpoint discovery and managed browser launch
+│   └── settings.ts / menu.ts          # Persistence and the /chrome-devtools surface
 ├── dist/                              # Generated Jiti runtime
 ├── scripts/build-runtime.mjs          # Runtime builder
-├── docs/                              # Published reference documentation
-├── reference/webmcp/                  # Repository-only compatibility prototype
-└── test/                              # Behavior and lifecycle coverage
+├── scripts/smoke-e2e.mjs              # End-to-end checks against a real Chrome
+├── docs/                              # Reference documentation
+├── reference/webmcp/                  # Compatibility prototype, not shipped
+└── test/                              # Behavior, lifecycle, and unit coverage
 ```
 
 The generated runtime is built from `src/index.ts` and does not import back into `src`.
+
+## 🧪 Development
+
+```bash
+npm install
+npm run check      # build, lint, typecheck, unit tests
+npm run smoke:e2e  # drives a real headless Chrome end to end
+```
+
+`npm run smoke:e2e` launches Chrome with an isolated temporary profile, serves a fixture page, and
+exercises snapshots, real input, waiting, console and network recording, emulation, and raw CDP
+against it. Point it at another binary with `PI_CHROME_DEVTOOLS_BROWSER`.
 
 ## 🔎 Keywords
 
