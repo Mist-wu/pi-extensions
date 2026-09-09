@@ -360,3 +360,68 @@ test("close is idempotent and rejects every pending command and event", async ()
 	await assert.rejects(event, /test close/u);
 	assert.equal(socket.closeCalls, 1);
 });
+
+test("subscribers observe every occurrence and bypass the per-method buffer cap", async () => {
+	const { client, socket } = await connectClient();
+	const seen: unknown[] = [];
+	const unsubscribe = client.subscribe("Network.requestWillBeSent", (params) => {
+		seen.push(params);
+	});
+
+	// Far more than MAX_BUFFERED_EVENTS_PER_METHOD: a subscribed method must never buffer.
+	for (let index = 0; index < 100; index += 1) {
+		socket.message({ method: "Network.requestWillBeSent", params: { requestId: `r${index}` } });
+	}
+
+	assert.equal(seen.length, 100);
+	assert.equal(socket.closeCalls, 0, "a subscribed high-volume domain must not close the socket");
+
+	unsubscribe();
+	socket.message({ method: "Network.requestWillBeSent", params: { requestId: "after" } });
+	assert.equal(seen.length, 100, "unsubscribing stops delivery");
+});
+
+test("a throwing subscriber cannot take down the shared connection", async () => {
+	const { client, socket } = await connectClient();
+	const seen: unknown[] = [];
+	client.subscribe("Log.entryAdded", () => {
+		throw new Error("recorder blew up");
+	});
+	client.subscribe("Log.entryAdded", (params) => {
+		seen.push(params);
+	});
+
+	socket.message({ method: "Log.entryAdded", params: { entry: { text: "still delivered" } } });
+
+	assert.equal(seen.length, 1);
+	assert.equal(client.closed, false);
+	assert.equal(socket.closeCalls, 0);
+});
+
+test("the drop overflow policy keeps the newest events instead of closing the connection", async () => {
+	const transport = socketFactory();
+	const connected = CdpClient.connect("ws://127.0.0.1/devtools/page/drop", {
+		timeoutMs: 100,
+		webSocketConstructor: transport.webSocketConstructor,
+		eventBufferOverflow: "drop",
+	});
+	const socket = transport.sockets[0];
+	assert.ok(socket);
+	socket.open();
+	const client = await connected;
+
+	for (let index = 0; index < 50; index += 1) {
+		socket.message({ method: "Page.frameNavigated", params: { frame: { id: `f${index}` } } });
+	}
+
+	assert.equal(client.closed, false);
+	assert.equal(socket.closeCalls, 0);
+
+	// The most recent event survived the eviction and is still waitable.
+	const latest = await client.waitForEvent(
+		"Page.frameNavigated",
+		(value): value is { frame: { id: string } } => true,
+		{ timeoutMs: 100 },
+	);
+	assert.equal(latest.frame.id, "f18", "expected the oldest events to be evicted, newest kept");
+});

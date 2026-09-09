@@ -47,7 +47,16 @@ export interface CdpOperationOptions {
 
 export interface CdpConnectOptions extends CdpOperationOptions {
 	webSocketConstructor?: CdpWebSocketConstructor;
+	/**
+	 * What to do when an unsubscribed event method exceeds the per-method buffer cap.
+	 * "close" (the default) treats it as a runaway producer and tears the connection down.
+	 * "drop" keeps the newest events and is intended for pooled long-lived sessions, where a
+	 * chatty domain must not kill a connection other tools are still using.
+	 */
+	eventBufferOverflow?: "close" | "drop";
 }
+
+export type CdpEventHandler = (params: unknown) => void;
 
 const MAX_BUFFERED_EVENTS_PER_METHOD = 32;
 const MAX_CDP_MESSAGE_BYTES = 8 * 1024 * 1024;
@@ -202,15 +211,40 @@ export class CdpClient {
 	#closed = false;
 	#eventBuffers = new Map<string, unknown[]>();
 	#eventWaiters = new Set<EventWaiter>();
+	#subscribers = new Map<string, Set<CdpEventHandler>>();
 	#nextId = 1;
 	#pending = new Map<number, PendingRequest>();
+	readonly #overflow: "close" | "drop";
 	readonly #socket: WebSocket;
 
-	private constructor(socket: WebSocket) {
+	private constructor(socket: WebSocket, overflow: "close" | "drop" = "close") {
 		this.#socket = socket;
+		this.#overflow = overflow;
 		socket.addEventListener("message", this.onMessage);
 		socket.addEventListener("close", this.onClose);
 		socket.addEventListener("error", this.onError);
+	}
+
+	get closed() {
+		return this.#closed;
+	}
+
+	/**
+	 * Observe every occurrence of one CDP event method for as long as the connection lives.
+	 * Subscribed methods bypass the pre-buffer entirely, so a high-volume domain such as Network
+	 * can stay enabled on a pooled session without tripping the buffer cap.
+	 */
+	subscribe(method: string, handler: CdpEventHandler) {
+		const handlers = this.#subscribers.get(method) ?? new Set<CdpEventHandler>();
+		handlers.add(handler);
+		this.#subscribers.set(method, handlers);
+		this.#eventBuffers.delete(method);
+		return () => {
+			const current = this.#subscribers.get(method);
+			if (!current) return;
+			current.delete(handler);
+			if (current.size === 0) this.#subscribers.delete(method);
+		};
 	}
 
 	static connect(url: string, options: CdpConnectOptions = {}) {
@@ -229,7 +263,8 @@ export class CdpClient {
 				socket.removeEventListener("error", onConnectError);
 				callback();
 			};
-			const onOpen = () => settle(() => resolve(new CdpClient(socket)));
+			const onOpen = () =>
+				settle(() => resolve(new CdpClient(socket, options.eventBufferOverflow ?? "close")));
 			const onConnectError = () =>
 				settle(() => {
 					socket.close();
@@ -339,6 +374,7 @@ export class CdpClient {
 		this.#socket.removeEventListener("error", this.onError);
 		this.rejectAll(reason);
 		this.#eventBuffers.clear();
+		this.#subscribers.clear();
 		try {
 			this.#socket.close();
 		} catch {
@@ -411,6 +447,16 @@ export class CdpClient {
 			this.close(new Error(`Chrome DevTools target detached: ${safeJson(event.params)}`));
 			return;
 		}
+		const subscribers = this.#subscribers.get(event.method);
+		if (subscribers) {
+			for (const handler of [...subscribers]) {
+				try {
+					handler(event.params);
+				} catch {
+					// A recorder must never take down the connection other tools are sharing.
+				}
+			}
+		}
 		for (const waiter of this.#eventWaiters) {
 			if (waiter.method !== event.method) continue;
 			let matched: boolean;
@@ -428,15 +474,19 @@ export class CdpClient {
 			waiter.resolve(event.params);
 			return;
 		}
+		if (subscribers) return;
 		const buffer = this.#eventBuffers.get(event.method) ?? [];
 		buffer.push(event.params);
 		if (buffer.length > MAX_BUFFERED_EVENTS_PER_METHOD) {
-			this.close(
-				new Error(
-					`Chrome DevTools WebSocket buffered more than ${MAX_BUFFERED_EVENTS_PER_METHOD} ${event.method} events`,
-				),
-			);
-			return;
+			if (this.#overflow === "close") {
+				this.close(
+					new Error(
+						`Chrome DevTools WebSocket buffered more than ${MAX_BUFFERED_EVENTS_PER_METHOD} ${event.method} events`,
+					),
+				);
+				return;
+			}
+			buffer.shift();
 		}
 		this.#eventBuffers.set(event.method, buffer);
 	}

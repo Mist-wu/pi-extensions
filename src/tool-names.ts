@@ -4,6 +4,15 @@ export const CORE_CHROME_DEVTOOLS_TOOL_NAMES = [
 	"chrome_devtools_navigate",
 	"chrome_devtools_evaluate",
 	"chrome_devtools_screenshot",
+	"chrome_devtools_snapshot",
+	"chrome_devtools_click",
+	"chrome_devtools_fill",
+	"chrome_devtools_press",
+	"chrome_devtools_wait_for",
+	"chrome_devtools_console",
+	"chrome_devtools_network",
+	"chrome_devtools_emulate",
+	"chrome_devtools_cdp_send",
 ] as const;
 
 export const WEBMCP_TOOL_NAMES = [

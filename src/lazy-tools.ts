@@ -31,6 +31,24 @@ const SEARCH_TEXT: Record<ChromeDevToolsToolName, string> = {
 	chrome_devtools_navigate: "navigate open create chrome browser page url website",
 	chrome_devtools_evaluate: "evaluate run javascript expression dom inspect chrome browser page",
 	chrome_devtools_screenshot: "capture screenshot png image visual chrome browser page",
+	chrome_devtools_snapshot:
+		"snapshot outline accessibility dom elements refs structure text cheap inspect chrome browser page",
+	chrome_devtools_click:
+		"click tap press double right hover mouse element button link interact chrome browser page",
+	chrome_devtools_fill:
+		"fill type input text form field enter value keyboard submit chrome browser page",
+	chrome_devtools_press:
+		"press key keyboard enter tab escape arrow shortcut modifier chrome browser page",
+	chrome_devtools_wait_for:
+		"wait for selector element text appear disappear condition idle timeout chrome browser page",
+	chrome_devtools_console:
+		"console log error warning exception message stack debug chrome browser page",
+	chrome_devtools_network:
+		"network request response http xhr fetch api status headers body failed debug chrome browser page",
+	chrome_devtools_emulate:
+		"emulate device viewport mobile responsive user agent dark mode throttle network cpu chrome browser page",
+	chrome_devtools_cdp_send:
+		"raw cdp protocol command debugger breakpoint profiler storage cookie accessibility fetch advanced chrome browser page",
 	chrome_devtools_webmcp_list_tools:
 		"list discover page provided website webmcp tools capabilities experimental",
 	chrome_devtools_webmcp_call_tool:

@@ -34,6 +34,7 @@ import {
 	webMcpEnabled,
 } from "../src/runtime.js";
 import { saveSettings } from "../src/settings.js";
+import { CHROME_DEVTOOLS_TOOL_NAMES, CORE_CHROME_DEVTOOLS_TOOL_NAMES } from "../src/tool-names.js";
 import {
 	createMockContext as createBaseMockContext,
 	createCustomSelectorHarness,
@@ -61,13 +62,8 @@ const WEBMCP_TOOLS = [
 	"chrome_devtools_webmcp_list_tools",
 	"chrome_devtools_webmcp_call_tool",
 ] as const;
-const CAPABILITY_TOOLS = [
-	"chrome_devtools_list_pages",
-	"chrome_devtools_select_page",
-	"chrome_devtools_navigate",
-	"chrome_devtools_evaluate",
-	"chrome_devtools_screenshot",
-] as const;
+const CAPABILITY_TOOLS = CORE_CHROME_DEVTOOLS_TOOL_NAMES;
+const CORE_COUNT = CAPABILITY_TOOLS.length;
 
 test("chrome-devtools factory registers without reading action methods", () => {
 	const mock = createMockPi();
@@ -86,19 +82,10 @@ test("chrome-devtools registers deferred CDP tools and one loader", () => {
 	const mock = createMockPi();
 	chromeDevtools(mock.pi);
 
-	assert.equal(mock.tools.length, 8);
+	assert.equal(mock.tools.length, CHROME_DEVTOOLS_TOOL_NAMES.length + 1);
 	assert.deepEqual(
 		mock.tools.map((tool) => tool.name),
-		[
-			"chrome_devtools_list_pages",
-			"chrome_devtools_select_page",
-			"chrome_devtools_navigate",
-			"chrome_devtools_evaluate",
-			"chrome_devtools_screenshot",
-			"chrome_devtools_webmcp_list_tools",
-			"chrome_devtools_webmcp_call_tool",
-			LOAD_TOOL,
-		],
+		[...CHROME_DEVTOOLS_TOOL_NAMES, LOAD_TOOL],
 	);
 	for (const tool of mock.tools.filter((candidate) => candidate.name !== LOAD_TOOL)) {
 		assert.equal(tool.promptSnippet, undefined);
@@ -772,7 +759,7 @@ test("Chrome DevTools main menu dispatches declarative actions at narrow widths"
 	});
 	await mock.commands.get("chrome-devtools")?.handler("", ctx);
 	assert.ok(renders.flat().every((line) => visibleWidth(line) <= 20));
-	assert.match(renders.flat().join("\n"), /Tool catalog: 0 of 5/);
+	assert.match(renders.flat().join("\n"), new RegExp(`Tool catalog: 0 of\\s+${CORE_COUNT}`));
 	assert.deepEqual(notifications, []);
 });
 
@@ -831,7 +818,7 @@ test("Chrome DevTools tool selection refreshes dynamic draft state after a toggl
 		});
 		await mock.commands.get("chrome-devtools")?.handler("tools", ctx);
 		assert.equal(toolScreens, 2);
-		assert.match(refreshed, /Browser tools \(4\/5\)/);
+		assert.match(refreshed, new RegExp(`Browser tools \\(${CORE_COUNT - 1}/${CORE_COUNT}\\)`));
 		assert.match(refreshed, /1 unapplied change/);
 	});
 });

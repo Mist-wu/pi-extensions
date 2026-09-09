@@ -12,21 +12,16 @@ import {
 import { loadChromeDevtoolsMenuSnapshot } from "../src/menu.js";
 import { applyRuntimeWebMcpSetting, state } from "../src/runtime.js";
 import { settingsFilePath } from "../src/settings.js";
+import { CORE_CHROME_DEVTOOLS_TOOL_NAMES, WEBMCP_TOOL_NAMES } from "../src/tool-names.js";
 import { buildBrowserStatusMessage } from "../src/tool-selector.js";
 import { createCustomSelectorHarness, createMockContext, createMockPi } from "./support.js";
 
-const WEBMCP_TOOLS = [
-	"chrome_devtools_webmcp_list_tools",
-	"chrome_devtools_webmcp_call_tool",
-] as const;
-
-const CHROME_TOOLS = [
-	"chrome_devtools_list_pages",
-	"chrome_devtools_select_page",
-	"chrome_devtools_navigate",
-	"chrome_devtools_evaluate",
-	"chrome_devtools_screenshot",
-] as const;
+const WEBMCP_TOOLS = WEBMCP_TOOL_NAMES;
+const CHROME_TOOLS = CORE_CHROME_DEVTOOLS_TOOL_NAMES;
+const CORE_COUNT = CHROME_TOOLS.length;
+const ALL_COUNT = CORE_COUNT + WEBMCP_TOOLS.length;
+// The tools screen lists the catalog, then Select all, Select none, Review changes...
+const REVIEW_ROW_INDEX = CORE_COUNT + 2;
 
 test("main menu presents consequential state and five goal-oriented actions without launching Chrome", async () => {
 	await withTempAgentDir(async () => {
@@ -48,7 +43,7 @@ test("main menu presents consequential state and five goal-oriented actions with
 
 		await mock.commands.get("chrome-devtools")?.handler("", ctx);
 
-		assert.match(rendered, /Tool catalog: 2 of 5 available · not\s+saved/);
+		assert.match(rendered, new RegExp(`Tool catalog: 2 of ${CORE_COUNT} available · not\\s+saved`));
 		assert.match(rendered, /Browser: not started · attaches or\s+launches on first use/);
 		assert.match(rendered, /Endpoint: http:\/\/127\.0\.0\.1:9222/);
 		assert.match(rendered, /[→›] Choose available browser tools…/);
@@ -62,20 +57,27 @@ test("main menu presents consequential state and five goal-oriented actions with
 	});
 });
 
-test("enabled WebMCP appears as an experimental seven-tool selection surface", async () => {
+test("enabled WebMCP appears as an experimental full-catalog selection surface", async () => {
 	await withTempAgentDir(async () => {
 		const mock = createMockPi({
 			activeTools: ["other_tool", ...CHROME_TOOLS, ...WEBMCP_TOOLS],
 		});
 		chromeDevtools(mock.pi);
 		let rendered = "";
+		let scrolled = "";
 		const { ctx } = createMockContext({
 			hasUI: true,
 			mode: "tui",
 			custom: async (factory: unknown) => {
-				const harness = createCustomSelectorHarness(factory, 80);
+				const harness = createCustomSelectorHarness(factory, 80, undefined, 60);
 				if (!harness.isPiTuiKitScreen) return harness.resultPromise;
 				rendered = harness.render().join("\n");
+				// The catalog no longer fits one viewport, so the WebMCP gateways at the end of the
+				// list are only visible once the selection scrolls down to them.
+				for (let index = 0; index < ALL_COUNT - 1; index += 1) {
+					harness.handleInput("tui.select.down");
+				}
+				scrolled = harness.render().join("\n");
 				harness.handleInput("\u0003");
 				return harness.result;
 			},
@@ -83,10 +85,10 @@ test("enabled WebMCP appears as an experimental seven-tool selection surface", a
 		applyRuntimeWebMcpSetting(true, (ctx as { sessionManager: object }).sessionManager);
 		await mock.commands.get("chrome-devtools")?.handler("tools", ctx);
 
-		assert.match(rendered, /Browser tools \(7\/7\)/u);
-		assert.match(rendered, /List page WebMCP tools · Experimental/u);
-		assert.match(rendered, /Call a page WebMCP tool · Experimental/u);
+		assert.match(rendered, new RegExp(`Browser tools \\(${ALL_COUNT}/${ALL_COUNT}\\)`, "u"));
 		assert.match(rendered, /WebMCP gateways: available for selection · experimental/u);
+		assert.match(scrolled, /List page WebMCP tools · Experimental/u);
+		assert.match(scrolled, /Call a page WebMCP tool · Experimental/u);
 	});
 });
 
@@ -104,7 +106,7 @@ test("returning from browser settings refreshes the parent WebMCP tool snapshot"
 		applyRuntimeWebMcpSetting(true, owner);
 		applyAvailableChromeDevtoolsTools(mock.pi, allTools);
 		const initial = await loadChromeDevtoolsMenuSnapshot(mock.pi, ctx);
-		assert.equal(initial.activeTools.length, 7);
+		assert.equal(initial.activeTools.length, ALL_COUNT);
 
 		writeFileSync(
 			settingsFilePath(),
@@ -115,7 +117,7 @@ test("returning from browser settings refreshes the parent WebMCP tool snapshot"
 		const refreshed = await loadChromeDevtoolsMenuSnapshot(mock.pi, ctx);
 
 		assert.deepEqual(refreshed.activeTools, [...CHROME_TOOLS]);
-		assert.equal(refreshed.activeTools.length, 5);
+		assert.equal(refreshed.activeTools.length, CORE_COUNT);
 	});
 });
 
@@ -176,7 +178,7 @@ test("main menu shows saved all-enabled state and the reversible disable preview
 			hasUI: true,
 			mode: "tui",
 			custom: async (factory: unknown) => {
-				const harness = createCustomSelectorHarness(factory, 80);
+				const harness = createCustomSelectorHarness(factory, 80, undefined, 60);
 				if (!harness.isPiTuiKitScreen) return harness.resultPromise;
 				rendered = harness.render().join("\n");
 				harness.handleInput("\u0003");
@@ -186,9 +188,12 @@ test("main menu shows saved all-enabled state and the reversible disable preview
 
 		await mock.commands.get("chrome-devtools")?.handler("", ctx);
 
-		assert.match(rendered, /Tool catalog: 5 of 5 available · saved/);
+		assert.match(
+			rendered,
+			new RegExp(`Tool catalog: ${CORE_COUNT} of ${CORE_COUNT} available · saved`),
+		);
 		assert.match(rendered, /Make all browser tools unavailable…/);
-		assert.match(rendered, /Preview 0 of 5; other active tools stay/);
+		assert.match(rendered, new RegExp(`Preview 0 of ${CORE_COUNT}; other active tools`));
 	});
 });
 
@@ -325,7 +330,10 @@ test("bulk preview and nested detail navigation return without side effects", as
 
 		await mock.commands.get("chrome-devtools")?.handler("", ctx);
 
-		assert.match(details[0] ?? "", /Proposed availability: 5\/5/);
+		assert.match(
+			details[0] ?? "",
+			new RegExp(`Proposed availability: ${CORE_COUNT}/${CORE_COUNT}`),
+		);
 		assert.match(details[1] ?? "", /does not probe the endpoint or launch Chrome/);
 		assert.match(details[2] ?? "", /DevTools endpoint/);
 		assert.match(details[2] ?? "", /Auto-launch/);
@@ -434,7 +442,7 @@ test("apply refreshes review instead of overwriting browser tools changed while 
 			hasUI: true,
 			mode: "tui",
 			custom: async (factory: unknown) => {
-				const harness = createCustomSelectorHarness(factory, 80);
+				const harness = createCustomSelectorHarness(factory, 80, undefined, 60);
 				if (!harness.isPiTuiKitScreen) return harness.resultPromise;
 				const rendered = harness.render().join("\n");
 				if (rendered.includes("Review tool changes")) {
@@ -449,7 +457,8 @@ test("apply refreshes review instead of overwriting browser tools changed while 
 				toolScreen += 1;
 				if (toolScreen === 1) harness.handleInput("tui.select.confirm");
 				else {
-					for (let index = 0; index < 7; index += 1) harness.handleInput("tui.select.down");
+					for (let index = 0; index < REVIEW_ROW_INDEX; index += 1)
+						harness.handleInput("tui.select.down");
 					harness.handleInput("tui.select.confirm");
 				}
 				return harness.resultPromise;
@@ -459,8 +468,11 @@ test("apply refreshes review instead of overwriting browser tools changed while 
 		await mock.commands.get("chrome-devtools")?.handler("tools", ctx);
 
 		assert.equal(reviewScreen, 2);
-		assert.match(refreshedReview, /Currently available: 3\/5/);
-		assert.match(refreshedReview, /Proposed availability: 4\/5/);
+		assert.match(refreshedReview, new RegExp(`Currently available: 3/${CORE_COUNT}`));
+		assert.match(
+			refreshedReview,
+			new RegExp(`Proposed availability: ${CORE_COUNT - 1}/${CORE_COUNT}`),
+		);
 		assert.deepEqual(mock.rawPi.getActiveTools(), [
 			"other_tool",
 			"chrome_devtools_load",
@@ -483,7 +495,7 @@ test("a failed confirmed save restores runtime and retains the draft for retry",
 			hasUI: true,
 			mode: "tui",
 			custom: async (factory: unknown) => {
-				const harness = createCustomSelectorHarness(factory, 80);
+				const harness = createCustomSelectorHarness(factory, 80, undefined, 60);
 				if (!harness.isPiTuiKitScreen) return harness.resultPromise;
 				const rendered = harness.render().join("\n");
 				if (rendered.includes("Review tool changes")) {
@@ -500,7 +512,8 @@ test("a failed confirmed save restores runtime and retains the draft for retry",
 				toolScreen += 1;
 				if (toolScreen === 1) harness.handleInput("tui.select.confirm");
 				else if (toolScreen === 2) {
-					for (let index = 0; index < 7; index += 1) harness.handleInput("tui.select.down");
+					for (let index = 0; index < REVIEW_ROW_INDEX; index += 1)
+						harness.handleInput("tui.select.down");
 					harness.handleInput("tui.select.confirm");
 				} else harness.handleInput("\u0003");
 				return harness.resultPromise;
@@ -510,7 +523,7 @@ test("a failed confirmed save restores runtime and retains the draft for retry",
 		await mock.commands.get("chrome-devtools")?.handler("tools", ctx);
 
 		assert.equal(reviewScreen, 2);
-		assert.match(retryReview, /Proposed availability: 4\/5/);
+		assert.match(retryReview, new RegExp(`Proposed availability: ${CORE_COUNT - 1}/${CORE_COUNT}`));
 		assert.deepEqual(mock.rawPi.getActiveTools(), [
 			"other_tool",
 			"chrome_devtools_load",
@@ -554,7 +567,8 @@ test("successful apply keeps unresolved settings warnings visible in the parent 
 				toolScreen += 1;
 				if (toolScreen === 1) harness.handleInput("tui.select.confirm");
 				else {
-					for (let index = 0; index < 7; index += 1) harness.handleInput("tui.select.down");
+					for (let index = 0; index < REVIEW_ROW_INDEX; index += 1)
+						harness.handleInput("tui.select.down");
 					harness.handleInput("tui.select.confirm");
 				}
 				return harness.resultPromise;
@@ -590,8 +604,16 @@ test("RPC dialogs preserve staged review and confirmed apply semantics", async (
 
 		await mock.commands.get("chrome-devtools")?.handler("tools", ctx);
 
-		assert.ok(dialogTitles.some((title) => title.includes("Currently available: 5/5")));
-		assert.ok(dialogTitles.some((title) => title.includes("Proposed availability: 4/5")));
+		assert.ok(
+			dialogTitles.some((title) =>
+				title.includes(`Currently available: ${CORE_COUNT}/${CORE_COUNT}`),
+			),
+		);
+		assert.ok(
+			dialogTitles.some((title) =>
+				title.includes(`Proposed availability: ${CORE_COUNT - 1}/${CORE_COUNT}`),
+			),
+		);
 		assert.deepEqual(mock.rawPi.getActiveTools(), [
 			"other_tool",
 			"chrome_devtools_load",
@@ -625,7 +647,7 @@ test("review previews the exact tool effect and one confirmed apply persists it"
 			hasUI: true,
 			mode: "tui",
 			custom: async (factory: unknown) => {
-				const harness = createCustomSelectorHarness(factory, 80);
+				const harness = createCustomSelectorHarness(factory, 80, undefined, 60);
 				if (!harness.isPiTuiKitScreen) return harness.resultPromise;
 				const rendered = harness.render().join("\n");
 				if (rendered.includes("Review tool changes")) {
@@ -640,7 +662,8 @@ test("review previews the exact tool effect and one confirmed apply persists it"
 					harness.handleInput("tui.select.confirm");
 					return harness.resultPromise;
 				}
-				for (let index = 0; index < 7; index += 1) harness.handleInput("tui.select.down");
+				for (let index = 0; index < REVIEW_ROW_INDEX; index += 1)
+					harness.handleInput("tui.select.down");
 				harness.handleInput("tui.select.confirm");
 				return harness.resultPromise;
 			},
@@ -648,8 +671,8 @@ test("review previews the exact tool effect and one confirmed apply persists it"
 
 		await mock.commands.get("chrome-devtools")?.handler("tools", ctx);
 
-		assert.match(review, /Currently available: 5\/5/);
-		assert.match(review, /Proposed availability: 4\/5/);
+		assert.match(review, new RegExp(`Currently available: ${CORE_COUNT}/${CORE_COUNT}`));
+		assert.match(review, new RegExp(`Proposed availability: ${CORE_COUNT - 1}/${CORE_COUNT}`));
 		assert.match(review, /Unavailable after apply:/);
 		assert.match(review, /List open pages \(chrome_devtools_list_pages\)/);
 		assert.match(review, /Other active Pi tools remain unchanged/);
@@ -665,7 +688,10 @@ test("review previews the exact tool effect and one confirmed apply persists it"
 			JSON.parse(readFileSync(settingsFilePath(), "utf8")).tools,
 			CHROME_TOOLS.slice(1),
 		);
-		assert.match(notifications.at(-1)?.message ?? "", /Saved: 4 of 5 browser tools available/);
+		assert.match(
+			notifications.at(-1)?.message ?? "",
+			new RegExp(`Saved: ${CORE_COUNT - 1} of ${CORE_COUNT} browser tools available`),
+		);
 	});
 });
 

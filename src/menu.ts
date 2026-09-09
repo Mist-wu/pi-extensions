@@ -63,6 +63,43 @@ const TOOL_PRESENTATION: Record<ChromeDevToolsToolName, { label: string; descrip
 		label: "Capture a screenshot",
 		description: "Save a PNG of the selected page (chrome_devtools_screenshot).",
 	},
+	chrome_devtools_snapshot: {
+		label: "Snapshot the page outline",
+		description:
+			"Capture a ref-addressable outline of interactive elements (chrome_devtools_snapshot).",
+	},
+	chrome_devtools_click: {
+		label: "Click or hover an element",
+		description: "Dispatch real mouse input at an element or point (chrome_devtools_click).",
+	},
+	chrome_devtools_fill: {
+		label: "Fill a form field",
+		description: "Focus a field and type into it with real input events (chrome_devtools_fill).",
+	},
+	chrome_devtools_press: {
+		label: "Press a key",
+		description: "Send real keyboard events and shortcuts (chrome_devtools_press).",
+	},
+	chrome_devtools_wait_for: {
+		label: "Wait for a page condition",
+		description: "Wait for a selector, text, or expression (chrome_devtools_wait_for).",
+	},
+	chrome_devtools_console: {
+		label: "Read the console",
+		description: "Read recorded console messages and exceptions (chrome_devtools_console).",
+	},
+	chrome_devtools_network: {
+		label: "Inspect network requests",
+		description: "List recorded requests and fetch response bodies (chrome_devtools_network).",
+	},
+	chrome_devtools_emulate: {
+		label: "Emulate a device or condition",
+		description: "Emulate viewport, user agent, theme, network, or CPU (chrome_devtools_emulate).",
+	},
+	chrome_devtools_cdp_send: {
+		label: "Send a raw CDP command",
+		description: "Send any Chrome DevTools Protocol command (chrome_devtools_cdp_send).",
+	},
 	chrome_devtools_webmcp_list_tools: {
 		label: "List page WebMCP tools · Experimental",
 		description: "Discover page-provided WebMCP capabilities (chrome_devtools_webmcp_list_tools).",

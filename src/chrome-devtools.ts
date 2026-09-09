@@ -1,10 +1,22 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import {
+	cdpSendTool,
+	clickTool,
+	consoleTool,
+	emulateTool,
+	fillTool,
+	networkTool,
+	pressTool,
+	snapshotTool,
+	waitForTool,
+} from "./advanced-tools.js";
+import {
 	shutdownManagedBrowser,
 	startManagedBrowserSession,
 	syncManagedBrowserSettings,
 } from "./browser-manager.js";
 import { setActivePageId } from "./cdp-client.js";
+import { closeAllSessions } from "./cdp-session.js";
 import {
 	availableChromeDevtoolsTools,
 	configureChromeDevtoolsToolExposure,
@@ -72,6 +84,15 @@ export default function chromeDevtools(pi: ExtensionAPI) {
 	pi.registerTool(navigateTool);
 	pi.registerTool(evaluateTool);
 	pi.registerTool(screenshotTool);
+	pi.registerTool(snapshotTool);
+	pi.registerTool(clickTool);
+	pi.registerTool(fillTool);
+	pi.registerTool(pressTool);
+	pi.registerTool(waitForTool);
+	pi.registerTool(consoleTool);
+	pi.registerTool(networkTool);
+	pi.registerTool(emulateTool);
+	pi.registerTool(cdpSendTool);
 	pi.registerTool(webMcpListToolsTool);
 	pi.registerTool(webMcpCallTool);
 	pi.registerTool(createChromeDevtoolsLoadTool(pi));
@@ -94,6 +115,7 @@ export default function chromeDevtools(pi: ExtensionAPI) {
 		setWebMcpSessionOwner(ctx.sessionManager);
 		replaceSessionController("Chrome DevTools session replaced");
 		invalidateWebMcpOperations(ctx.sessionManager, "Chrome DevTools session replaced");
+		closeAllSessions(new Error("Chrome DevTools session replaced"));
 		state.shuttingDown = false;
 		state.settingsNotice = undefined;
 		ctx.ui.setStatus(STATUS_KEY, undefined);
@@ -143,6 +165,7 @@ export default function chromeDevtools(pi: ExtensionAPI) {
 		state.sessionGeneration += 1;
 		replaceSessionController("Chrome DevTools session shut down");
 		invalidateWebMcpOperations(ctx.sessionManager, "Chrome DevTools session shut down");
+		closeAllSessions(new Error("Chrome DevTools session shut down"));
 		ctx.ui.setStatus(STATUS_KEY, undefined);
 		const browserShutdown = shutdownManagedBrowser(undefined, {
 			cancelLaunch: true,
