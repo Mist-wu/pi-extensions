@@ -1,0 +1,33 @@
+{
+	"name": "@mist-wu/pi-websearch",
+	"version": "0.1.0",
+	"private": true,
+	"description": "Pi extension that registers a web_search tool backed by OpenAI Codex's search endpoint.",
+	"type": "module",
+	"license": "MIT",
+	"keywords": [
+		"pi-package",
+		"pi-extension",
+		"pi",
+		"web-search",
+		"codex"
+	],
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"scripts": {
+		"typecheck": "tsc --noEmit",
+		"check": "npm run typecheck"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-coding-agent": "*",
+		"typebox": "*"
+	},
+	"devDependencies": {
+		"@types/node": "26.4.1",
+		"typescript": "7.0.2"
+	}
+}
