@@ -24,7 +24,7 @@ Two extensions, one install. Both are native Pi tools — no MCP server, no sepa
 
 <br/>
 
-### [chrome-devtools](./chrome-devtools) — drive and debug Chrome
+## [chrome-devtools](./chrome-devtools) — drive and debug Chrome
 
 Pooled CDP sessions that stay open across tool calls, DOM snapshots with stable element refs,
 real mouse and keyboard events, rolling console and network logs, device emulation, and a raw
@@ -40,7 +40,7 @@ support it they load on demand via `chrome_devtools_load` rather than filling th
 
 The browser can keep a profile and outlive the session, so a login survives to the next one.
 
-### [websearch](./websearch) — search the web
+## [websearch](./websearch) — search the web
 
 One tool, `web_search`, with `search` / `open` / `click` / `find` commands. It goes through
 OpenAI Codex's search endpoint using the `openai-codex` credential Pi already holds — it does
