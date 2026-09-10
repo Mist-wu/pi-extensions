@@ -9,7 +9,6 @@
 [![pi](https://img.shields.io/badge/pi-extension-2563eb)](https://pi.dev)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Node](https://img.shields.io/badge/node-%E2%89%A5%2022.19-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
-[![Tests](https://img.shields.io/badge/tests-186%20passing-22c55e)](./chrome-devtools/test)
 [![License](https://img.shields.io/badge/license-MIT-22c55e)](https://opensource.org/license/mit)
 
 </div>
