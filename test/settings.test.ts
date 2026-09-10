@@ -533,3 +533,56 @@ test("saving and clearing browser.userDataDir round-trips through the settings f
 		);
 	});
 });
+
+test("browser.keepAlive only takes effect alongside a persistent profile", async () => {
+	await withSettingsFixture(async ({ agentDir, cwd }) => {
+		writeFileSync(settingsFilePath(), `${JSON.stringify({ browser: { keepAlive: true } })}\n`);
+		let loaded = await loadSettings({ cwd, projectTrusted: true });
+		assert.equal(
+			loaded.effectiveBrowser.keepAliveEnabled,
+			false,
+			"without a profile to return to, keeping a browser alive strands its temp directory",
+		);
+		assert.match(loaded.warnings.join("\n"), /keepAlive is ignored without browser\.userDataDir/i);
+
+		writeFileSync(
+			settingsFilePath(),
+			`${JSON.stringify({
+				browser: { keepAlive: true, userDataDir: path.join(agentDir, "chrome-profile") },
+			})}\n`,
+		);
+		loaded = await loadSettings({ cwd, projectTrusted: true });
+		assert.equal(loaded.effectiveBrowser.keepAliveEnabled, true);
+		assert.equal(loaded.effectiveBrowser.keepAliveSource, "user");
+		assert.doesNotMatch(loaded.warnings.join("\n"), /keepAlive is ignored/i);
+	});
+});
+
+test("browser.keepAlive defaults to off and rejects non-boolean values", async () => {
+	await withSettingsFixture(async ({ cwd }) => {
+		let loaded = await loadSettings({ cwd, projectTrusted: true });
+		assert.equal(loaded.effectiveBrowser.keepAliveEnabled, false);
+		assert.equal(loaded.effectiveBrowser.keepAliveSource, "default");
+
+		writeFileSync(settingsFilePath(), `${JSON.stringify({ browser: { keepAlive: "yes" } })}\n`);
+		loaded = await loadSettings({ cwd, projectTrusted: true });
+		assert.equal(loaded.effectiveBrowser.keepAliveEnabled, false);
+		assert.match(loaded.warnings.join("\n"), /keepAlive/i);
+	});
+});
+
+test("a project file cannot turn browser.keepAlive on", async () => {
+	await withSettingsFixture(async ({ agentDir, cwd }) => {
+		writeFileSync(
+			settingsFilePath(),
+			`${JSON.stringify({ browser: { userDataDir: path.join(agentDir, "chrome-profile") } })}\n`,
+		);
+		writeFileSync(
+			projectSettingsFilePath(cwd),
+			`${JSON.stringify({ browser: { keepAlive: true } })}\n`,
+		);
+		const loaded = await loadSettings({ cwd, projectTrusted: true });
+		assert.equal(loaded.effectiveBrowser.keepAliveEnabled, false);
+		assert.match(loaded.warnings.join("\n"), /project browser\.keepAlive ignored/i);
+	});
+});

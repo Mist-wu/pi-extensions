@@ -35,9 +35,11 @@ export interface ChromeDevToolsState {
 	autoLaunchSource: EffectiveBrowserSettings["autoLaunchSource"];
 	browserExecutable?: string;
 	browserUserDataDir?: string;
+	keepAliveEnabled: boolean;
 	extensionPaths: string[];
 	browserExecutableSource: EffectiveBrowserSettings["executablePathSource"];
 	browserUserDataDirSource: EffectiveBrowserSettings["userDataDirSource"];
+	keepAliveSource: EffectiveBrowserSettings["keepAliveSource"];
 	extensionPathsSource: EffectiveBrowserSettings["extensionPathsSource"];
 	settingsFilePath?: string;
 	projectSettingsFilePath?: string;
@@ -57,6 +59,8 @@ export interface ManagedBrowser {
 	userDataDir: string;
 	/** A user-configured profile is reused across sessions, so shutdown must not delete it. */
 	persistentProfile: boolean;
+	/** Session shutdown detaches from this browser instead of stopping it. */
+	keepAlive: boolean;
 	port?: number;
 	exited: boolean;
 	ready: boolean;
@@ -94,9 +98,11 @@ export const state: ChromeDevToolsState = {
 	autoLaunchEnabled: true,
 	endpointSource: "default",
 	autoLaunchSource: "default",
+	keepAliveEnabled: false,
 	extensionPaths: [],
 	browserExecutableSource: "default",
 	browserUserDataDirSource: "default",
+	keepAliveSource: "default",
 	extensionPathsSource: "default",
 	projectSettingsTrusted: false,
 	shuttingDown: false,
@@ -210,9 +216,11 @@ export function applyRuntimeBrowserSettings(
 	state.autoLaunchSource = browser.autoLaunchSource;
 	state.browserExecutable = browser.executablePath;
 	state.browserUserDataDir = browser.userDataDir;
+	state.keepAliveEnabled = browser.keepAliveEnabled;
 	state.extensionPaths = [...browser.extensionPaths];
 	state.browserExecutableSource = browser.executablePathSource;
 	state.browserUserDataDirSource = browser.userDataDirSource;
+	state.keepAliveSource = browser.keepAliveSource;
 	state.extensionPathsSource = browser.extensionPathsSource;
 	state.settingsFilePath = paths.user;
 	state.projectSettingsFilePath = paths.project;

@@ -34,6 +34,7 @@ export interface UserBrowserSettings {
 	autoLaunch?: boolean;
 	executablePath?: string;
 	userDataDir?: string;
+	keepAlive?: boolean;
 	extensionPaths?: string[];
 }
 
@@ -42,6 +43,7 @@ export interface BrowserSettingsPatch {
 	autoLaunch?: boolean | null;
 	executablePath?: string | null;
 	userDataDir?: string | null;
+	keepAlive?: boolean | null;
 }
 
 export interface EffectiveBrowserSettings {
@@ -58,11 +60,19 @@ export interface EffectiveBrowserSettings {
 	 * reused and never deleted, so signed-in sessions persist across Pi sessions.
 	 */
 	userDataDir?: string;
+	/**
+	 * Leave a managed browser running when the Pi session ends, so its signed-in pages and
+	 * session cookies are still there next time. Only meaningful with a persistent userDataDir,
+	 * because a browser that outlives the session also outlives any chance to clean up a
+	 * throwaway profile.
+	 */
+	keepAliveEnabled: boolean;
 	extensionPaths: string[];
 	endpointSource: BrowserSettingsSource;
 	autoLaunchSource: BrowserSettingsSource;
 	executablePathSource: BrowserSettingsSource;
 	userDataDirSource: BrowserSettingsSource;
+	keepAliveSource: BrowserSettingsSource;
 	extensionPathsSource: BrowserSettingsSource;
 }
 
@@ -173,6 +183,11 @@ export async function loadSettings(options: SettingsLoadOptions = {}): Promise<S
 
 	const userBrowser = user.normalized?.browser ?? {};
 	const effectiveBrowser = resolveEffectiveBrowser(userBrowser, project.normalized?.browser);
+	if (userBrowser.keepAlive === true && !effectiveBrowser.keepAliveEnabled) {
+		warnings.push(
+			`Chrome DevTools browser.keepAlive is ignored without browser.userDataDir in ${userPath}; a browser that outlives the session would strand its temporary profile.`,
+		);
+	}
 	const settings = resolveSettings(user.normalized, project.normalized, effectiveBrowser);
 	const recognized =
 		settings.tools !== undefined ||
@@ -251,6 +266,9 @@ function resolveEffectiveBrowser(
 				: environmentAutoLaunch !== "0",
 		...(executablePath ? { executablePath } : {}),
 		...(user.userDataDir ? { userDataDir: user.userDataDir } : {}),
+		// Keeping a browser alive without a profile to come back to would strand a temporary
+		// directory that nothing can delete, so the profile gates the setting.
+		keepAliveEnabled: user.keepAlive === true && user.userDataDir !== undefined,
 		extensionPaths: [...extensionPaths],
 		endpointSource,
 		autoLaunchSource:
@@ -265,6 +283,7 @@ function resolveEffectiveBrowser(
 				? "user"
 				: "default",
 		userDataDirSource: user.userDataDir ? "user" : "default",
+		keepAliveSource: user.keepAlive !== undefined ? "user" : "default",
 		extensionPathsSource: project?.extensionPaths
 			? "project"
 			: user.extensionPaths
@@ -332,7 +351,7 @@ function projectOwnedSettingsWarnings(
 	if (scope !== "project") return [];
 	const browser = isRecord(document.browser) ? document.browser : undefined;
 	const warnings = browser
-		? ["endpoint", "autoLaunch", "executablePath", "userDataDir"]
+		? ["endpoint", "autoLaunch", "executablePath", "userDataDir", "keepAlive"]
 				.filter((field) => browser[field] !== undefined)
 				.map(
 					(field) =>
@@ -417,6 +436,12 @@ async function normalizeBrowserSection(
 			throw new Error("browser.userDataDir in user settings must be absolute");
 		}
 		normalized.userDataDir = resolve(browser.userDataDir);
+	}
+	if (scope === "user" && browser.keepAlive !== undefined) {
+		if (typeof browser.keepAlive !== "boolean") {
+			throw new Error("expected browser.keepAlive to be a boolean");
+		}
+		normalized.keepAlive = browser.keepAlive;
 	}
 
 	if (browser.extensionPaths !== undefined) {
@@ -589,7 +614,13 @@ export function saveBrowserSettings(
 ): Promise<void> {
 	return queueSettingsMutation(async (current) => {
 		const browser = isRecord(current.browser) ? { ...current.browser } : {};
-		for (const field of ["endpoint", "autoLaunch", "executablePath", "userDataDir"] as const) {
+		for (const field of [
+			"endpoint",
+			"autoLaunch",
+			"executablePath",
+			"userDataDir",
+			"keepAlive",
+		] as const) {
 			const value = patch[field];
 			if (value === undefined) continue;
 			if (value === null) delete browser[field];

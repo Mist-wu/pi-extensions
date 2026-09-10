@@ -26,6 +26,8 @@ import type { EffectiveBrowserSettings } from "./settings.js";
 interface BrowserSpawnOptions {
 	shell: false;
 	stdio: "ignore";
+	/** A browser meant to outlive this process must leave the parent's process group. */
+	detached?: boolean;
 }
 
 export interface BrowserManagerOperations {
@@ -82,11 +84,13 @@ function runtimeBrowserSettings(): EffectiveBrowserSettings {
 		autoLaunchEnabled: state.autoLaunchEnabled,
 		...(state.browserExecutable ? { executablePath: state.browserExecutable } : {}),
 		...(state.browserUserDataDir ? { userDataDir: state.browserUserDataDir } : {}),
+		keepAliveEnabled: state.keepAliveEnabled,
 		extensionPaths: [...state.extensionPaths],
 		endpointSource: state.endpointSource,
 		autoLaunchSource: state.autoLaunchSource,
 		executablePathSource: state.browserExecutableSource,
 		userDataDirSource: state.browserUserDataDirSource,
+		keepAliveSource: state.keepAliveSource,
 		extensionPathsSource: state.extensionPathsSource,
 	};
 }
@@ -129,6 +133,10 @@ export function managedBrowserExtensionPaths(owner?: object) {
 
 export function managedBrowserUserDataDir(owner?: object) {
 	return browserSettingsForOwner(owner).userDataDir;
+}
+
+export function managedBrowserKeepAlive(owner?: object) {
+	return browserSettingsForOwner(owner).keepAliveEnabled;
 }
 
 export function managedBrowserExtensionPathsSource(owner?: object) {
@@ -317,7 +325,8 @@ async function prepareManagedBrowserLaunch(
 		await shutdownManagedBrowser(existingBrowser, { awaitLaunch: false, owner });
 		throwIfBrowserLaunchCancelled(generation, signal, owner);
 	}
-	if (managedBrowserPortConfigured(owner)) {
+	// keepAlive pins the port the same way an explicit endpoint does, so it needs the same check.
+	if (managedBrowserPortConfigured(owner) || managedBrowserKeepAlive(owner)) {
 		const available = await browserManagerOperations.isPortAvailable(
 			browserSettingsForOwner(owner).host,
 			managedBrowserPort(owner),
@@ -460,6 +469,10 @@ async function launchBrowserCandidate(
 	// it. Without one, fall back to a throwaway directory that shutdown cleans up.
 	const configuredUserDataDir = managedBrowserUserDataDir(owner);
 	const persistentProfile = configuredUserDataDir !== undefined;
+	const keepAlive = managedBrowserKeepAlive(owner);
+	// Chrome publishes DevToolsActivePort only for a port it picked itself, so a pinned port
+	// must skip port discovery too: reading that file would poll for something never written.
+	const pinnedPort = managedBrowserPortConfigured(owner) || keepAlive;
 	const userDataDir = configuredUserDataDir ?? (await createEphemeralProfileDir());
 	if (persistentProfile) {
 		await browserManagerOperations.mkdir(userDataDir, { recursive: true });
@@ -474,9 +487,10 @@ async function launchBrowserCandidate(
 	let managedBrowser: ManagedBrowser | undefined;
 	try {
 		throwIfBrowserLaunchCancelled(generation, signal, owner);
-		const portArgument = managedBrowserPortConfigured(owner)
-			? String(managedBrowserPort(owner))
-			: "0";
+		// A dynamic port is fine for a browser that dies with the session. One that outlives it has
+		// to listen somewhere the next session already probes, or that session finds nothing and
+		// tries to launch a second browser on a profile Chrome has locked.
+		const portArgument = pinnedPort ? String(managedBrowserPort(owner)) : "0";
 		const args = buildManagedBrowserLaunchArguments(
 			userDataDir,
 			portArgument,
@@ -485,11 +499,19 @@ async function launchBrowserCandidate(
 		const child = browserManagerOperations.spawn(candidate.resolvedExecutable, args, {
 			shell: false,
 			stdio: "ignore",
+			...(keepAlive ? { detached: true } : {}),
 		});
+		if (keepAlive) {
+			// Node keeps the event loop alive for a running child, so a browser that is never
+			// stopped would keep Pi itself from exiting. Detaching and unreferencing lets the
+			// session end while the browser stays up for the next one.
+			child.unref();
+		}
 		const launchedBrowser: ManagedBrowser = {
 			process: child,
 			userDataDir,
 			persistentProfile,
+			keepAlive,
 			exited: false,
 			ready: false,
 			ownerGeneration: generation,
@@ -504,17 +526,14 @@ async function launchBrowserCandidate(
 			}
 			launchedBrowser.exited = true;
 			launchedBrowser.ready = false;
-			if (
-				!managedBrowserPortConfigured(owner) &&
-				launchedBrowser.port === managedBrowserPort(owner)
-			) {
+			if (!pinnedPort && launchedBrowser.port === managedBrowserPort(owner)) {
 				setManagedBrowserPort(owner, managedBrowserConfiguredPort(owner));
 			}
 		});
 
 		await waitForBrowserSpawn(child);
 		throwIfBrowserLaunchCancelled(generation, signal, owner);
-		if (managedBrowserPortConfigured(owner)) {
+		if (pinnedPort) {
 			launchedBrowser.port = managedBrowserPort(owner);
 		} else {
 			launchedBrowser.port = await readManagedBrowserPort(
@@ -704,6 +723,11 @@ async function cleanupManagedBrowser(managedBrowser: ManagedBrowser, owner?: obj
 		if (owner) invalidateWebMcpOperations(owner, "Chrome DevTools managed browser closed");
 		if (state.managedBrowser === managedBrowser) state.managedBrowser = undefined;
 		else setManagedBrowser(owner, undefined);
+	}
+	if (managedBrowser.keepAlive && !managedBrowser.exited) {
+		// Deliberately left running: its signed-in pages and session cookies are the point, and the
+		// next session attaches to it through the endpoint it is already listening on.
+		return;
 	}
 	if (!managedBrowser.exited) {
 		killManagedBrowserProcess(managedBrowser);

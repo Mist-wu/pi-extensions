@@ -20,6 +20,7 @@ Use these native Pi tools for web debugging, UI validation, and browser-assisted
 - Drives the page with trusted `Input` events for clicks, typing, and keyboard shortcuts, which pages cannot distinguish from a user.
 - Captures a ref-addressable text snapshot of the page that costs a fraction of a screenshot.
 - Emulates device viewports, user agents, colour scheme, network throttling, and CPU slowdown.
+- Optionally reuses one browser profile across sessions, and optionally leaves that browser running between them.
 - Exposes any Chrome DevTools Protocol command for domains the dedicated tools do not wrap.
 - Reuses an existing CDP endpoint or launches an isolated Chromium-family browser on first use.
 - Recovers from stale page selections and explains browser startup or endpoint failures.
@@ -239,7 +240,7 @@ For example, this partial document attaches to a user-started browser without la
 }
 ```
 
-The same file owns `browser.endpoint`, `browser.autoLaunch`, `browser.executablePath`, `browser.userDataDir`, `browser.extensionPaths`, and user-only `webmcp.enabled`.
+The same file owns `browser.endpoint`, `browser.autoLaunch`, `browser.executablePath`, `browser.userDataDir`, `browser.keepAlive`, `browser.extensionPaths`, and user-only `webmcp.enabled`.
 Browser connection fields and `webmcp.enabled` are machine-owned user settings; trusted project files may replace only `browser.extensionPaths`.
 Confirmed menu changes apply before the next browser connection and close only an extension-owned managed browser.
 Manual JSON edits and unpacked-extension changes apply after `/reload` or session replacement.
@@ -286,6 +287,34 @@ profile directory, and the second one exits immediately.
 
 `browser.userDataDir` is a machine-owned user setting like the other connection fields, so project
 files cannot point it somewhere else.
+
+### Keeping the browser itself alive
+
+Some sites hold their login in a session cookie, which Chrome drops the moment the browser closes.
+A persistent profile does not help there, because the extension stops the browser it launched when
+the Pi session ends. Add `browser.keepAlive` to leave it running instead:
+
+```json
+{
+  "browser": {
+    "userDataDir": "/Users/you/.pi/agent/chrome-profile",
+    "keepAlive": true
+  }
+}
+```
+
+The browser is detached from Pi, so the session can end while it stays up, and the next session
+attaches to it over the endpoint rather than launching another. Close it yourself when you are done.
+
+Two consequences worth knowing:
+
+- `keepAlive` pins the debugging port to `browser.endpoint` (`127.0.0.1:9222` by default), because a
+  browser on a port Chrome picked at random is one the next session cannot find.
+- It requires `browser.userDataDir`. Without one, a browser that outlives the session would strand a
+  temporary profile that nothing is left to delete, so the setting is ignored and a warning is shown.
+
+Quit that browser the way you quit any other (⌘Q). A signal leaves the profile marked as an unclean
+exit, and Chrome then offers to restore pages on every later launch.
 
 ## 🔒 Security and privacy
 

@@ -20,7 +20,13 @@ import type { EffectiveBrowserSettings } from "../src/settings.js";
 
 class FakeChildProcess extends EventEmitter {
 	exited = false;
+	unrefCalls = 0;
 	killCalls: Array<NodeJS.Signals | undefined> = [];
+
+	unref() {
+		this.unrefCalls += 1;
+		return this;
+	}
 
 	kill(signal?: NodeJS.Signals) {
 		this.killCalls.push(signal);
@@ -67,10 +73,16 @@ function successfulOperations(
 ) {
 	const child = new FakeChildProcess();
 	const calls = {
-		spawn: [] as Array<{ executable: string; args: string[]; shell: boolean | undefined }>,
+		spawn: [] as Array<{
+			executable: string;
+			args: string[];
+			shell: boolean | undefined;
+			detached: boolean | undefined;
+		}>,
 		fetch: [] as string[],
 		mkdir: [] as string[],
 		mkdtemp: [] as string[],
+		readFile: [] as string[],
 		rm: [] as string[],
 		version: [] as string[],
 	};
@@ -84,7 +96,10 @@ function successfulOperations(
 			calls.mkdtemp.push(prefix);
 			return "/tmp/test-managed-profile";
 		},
-		readFile: async () => "9333\n/devtools/browser/test\n",
+		readFile: async (target) => {
+			calls.readFile.push(target);
+			return "9333\n/devtools/browser/test\n";
+		},
 		rm: async (target) => {
 			calls.rm.push(target);
 		},
@@ -107,7 +122,12 @@ function successfulOperations(
 				: (options.portAvailable ?? true),
 		sleep: async () => undefined,
 		spawn: (executable, args, spawnOptions) => {
-			calls.spawn.push({ executable, args, shell: spawnOptions.shell });
+			calls.spawn.push({
+				executable,
+				args,
+				shell: spawnOptions.shell,
+				detached: spawnOptions.detached,
+			});
 			queueMicrotask(() => child.emit("spawn"));
 			return child as unknown as ChildProcess;
 		},
@@ -583,7 +603,13 @@ test("an unconfigured profile stays temporary and is removed on shutdown", async
 		await ensureDevToolsEndpoint();
 
 		assert.equal(calls.mkdtemp.length, 1);
+		assert.equal(calls.spawn[0]?.detached, undefined, "a disposable browser stays a child");
 		assert.deepEqual(calls.mkdir, [], "a throwaway profile needs no explicit directory creation");
+		assert.deepEqual(
+			calls.readFile,
+			["/tmp/test-managed-profile/DevToolsActivePort"],
+			"a dynamic port is still discovered from the file Chrome writes",
+		);
 		assert.equal(state.managedBrowser?.userDataDir, "/tmp/test-managed-profile");
 		assert.equal(state.managedBrowser?.persistentProfile, false);
 
@@ -641,6 +667,103 @@ test("a reused profile drops its previous DevToolsActivePort before relaunching"
 			calls.rm.every((target) => target !== "/profiles/pi-chrome"),
 			"clearing the port file must not touch the profile itself",
 		);
+	} finally {
+		restore();
+	}
+});
+
+test("keepAlive pins the debugging port so the next session can find the browser", async () => {
+	resetRuntime({
+		browserUserDataDir: "/profiles/pi-chrome",
+		browserUserDataDirSource: "user",
+		keepAliveEnabled: true,
+		keepAliveSource: "user",
+	});
+	const { child, calls, restore } = successfulOperations();
+	try {
+		await ensureDevToolsEndpoint();
+
+		// A dynamic port would leave the surviving browser unreachable next session.
+		assert.ok(
+			calls.spawn[0]?.args.includes("--remote-debugging-port=9222"),
+			`expected a pinned port, got ${calls.spawn[0]?.args.join(" ")}`,
+		);
+		// Chrome writes DevToolsActivePort only for a port it chose itself. Polling for it after
+		// pinning one hangs the launch until the endpoint wait expires.
+		assert.deepEqual(calls.readFile, [], "a pinned port must not wait on DevToolsActivePort");
+		assert.equal(state.port, 9222);
+		// Node keeps its event loop alive for a running child, so an un-unref'd browser that is
+		// never stopped would hang Pi's own exit.
+		assert.equal(child.unrefCalls, 1, "a kept-alive browser must be detached from this process");
+		assert.equal(calls.spawn[0]?.detached, true);
+	} finally {
+		restore();
+	}
+});
+
+test("keepAlive leaves the browser running and its profile intact at shutdown", async () => {
+	resetRuntime({
+		browserUserDataDir: "/profiles/pi-chrome",
+		browserUserDataDirSource: "user",
+		keepAliveEnabled: true,
+		keepAliveSource: "user",
+	});
+	const { child, calls, restore } = successfulOperations();
+	try {
+		await ensureDevToolsEndpoint();
+		const managed = state.managedBrowser;
+		assert.ok(managed);
+
+		await shutdownManagedBrowser(managed);
+
+		assert.deepEqual(child.killCalls, [], "a kept-alive browser must not be stopped");
+		assert.equal(child.exited, false);
+		assert.ok(!calls.rm.includes("/profiles/pi-chrome"), "its profile must survive too");
+		// The session still lets go of it, so nothing keeps driving a browser it no longer owns.
+		assert.equal(state.managedBrowser, undefined);
+	} finally {
+		child.kill("SIGKILL");
+		restore();
+	}
+});
+
+test("a kept-alive browser that already exited is cleaned up normally", async () => {
+	resetRuntime({
+		browserUserDataDir: "/profiles/pi-chrome",
+		browserUserDataDirSource: "user",
+		keepAliveEnabled: true,
+		keepAliveSource: "user",
+	});
+	const { child, calls, restore } = successfulOperations();
+	try {
+		await ensureDevToolsEndpoint();
+		const managed = state.managedBrowser;
+		assert.ok(managed);
+
+		// The user closed the window themselves: there is nothing left to keep alive.
+		managed.exited = true;
+		child.exited = true;
+		await shutdownManagedBrowser(managed);
+
+		assert.deepEqual(child.killCalls, []);
+		assert.ok(!calls.rm.includes("/profiles/pi-chrome"));
+		assert.equal(state.managedBrowser, undefined);
+	} finally {
+		restore();
+	}
+});
+
+test("keepAlive refuses to launch when its pinned port is already taken", async () => {
+	resetRuntime({
+		browserUserDataDir: "/profiles/pi-chrome",
+		browserUserDataDirSource: "user",
+		keepAliveEnabled: true,
+		keepAliveSource: "user",
+	});
+	const { calls, restore } = successfulOperations({ portAvailable: false });
+	try {
+		await assert.rejects(ensureDevToolsEndpoint(), /already in use/);
+		assert.deepEqual(calls.spawn, [], "a doomed launch should not spawn anything");
 	} finally {
 		restore();
 	}
