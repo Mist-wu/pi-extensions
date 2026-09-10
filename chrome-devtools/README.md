@@ -1,18 +1,30 @@
-# 🌐 pi-chrome-devtools — Inspect and Control Chrome from Pi
+<div align="center">
 
-[![Pi extension](https://img.shields.io/badge/Pi-extension-blue)](https://pi.dev) [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
+# chrome-devtools
 
-Drive and debug Chrome from Pi through the Chrome DevTools Protocol: inspect tabs, navigate, snapshot
-the DOM, click and type with real input events, read the console and network log, emulate devices,
-and reach any protocol domain directly.
-Use these native Pi tools for web debugging, UI validation, and browser-assisted investigation without an MCP server.
+**Drive and debug Chrome from Pi over the DevTools Protocol.**
+
+Inspect tabs, navigate, snapshot the DOM, click and type with real input events,
+read the console and network log, emulate devices, and reach any protocol domain
+directly — native Pi tools, no MCP server.
+
+<br/>
+
+[![pi](https://img.shields.io/badge/pi-extension-2563eb)](https://pi.dev)
+[![CDP](https://img.shields.io/badge/protocol-CDP-4285F4?logo=googlechrome&logoColor=white)](https://chromedevtools.github.io/devtools-protocol/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![License](https://img.shields.io/badge/license-MIT-22c55e)](./LICENSE)
+
+</div>
+
+---
 
 > Derived from [`@narumitw/pi-chrome-devtools`](https://github.com/narumiruna/pi-extensions/tree/main/packages/pi-chrome-devtools)
 > 0.53.1 (MIT), itself inspired by [`chrome-devtools-mcp`](https://github.com/ChromeDevTools/chrome-devtools-mcp).
 > This fork adds pooled CDP sessions, console and network recording, real input, and a raw protocol escape hatch.
 > Compatibility with either upstream is not guaranteed.
 
-## ✨ Features
+## Features
 
 - Lists and selects inspectable pages, navigates URLs, evaluates JavaScript, and captures PNG screenshots.
 - Keeps one pooled CDP connection per page for the whole Pi session, enabling each domain at most once.
@@ -31,7 +43,7 @@ Use these native Pi tools for web debugging, UI validation, and browser-assisted
 - Persists reviewed tool availability while keeping browser connection settings machine-owned.
 - Offers opt-in experimental WebMCP discovery and invocation through two fixed gateway tools without dynamically registering page-provided definitions.
 
-## 📦 Install
+## Install
 
 This extension lives in the [`pi-extensions`](https://github.com/Mist-wu/pi-extensions)
 repository. Installing it installs every extension in that repository:
@@ -63,14 +75,14 @@ build step to run. `npm run build` produces the bundled `dist/` runtime used for
 Pi extensions run with your user permissions.
 Review third-party extension source before installing it.
 
-## 🚀 Quick start
+## Quick start
 
 Start Pi and ask the agent to load the browser capability needed for the task.
 By default, the extension tries `http://127.0.0.1:9222` and launches an isolated local Chromium-family browser if that endpoint is unavailable.
 Run `/chrome-devtools` to review status, settings, help, and available tools.
 WebMCP remains disabled until you explicitly enable it.
 
-## 🌐 Browser setup
+## Browser setup
 
 By default, the extension attaches to `http://127.0.0.1:9222` or launches an isolated local browser on first use.
 It never closes an external browser.
@@ -94,7 +106,7 @@ Enable `webmcp.enabled` only in user settings, then choose which gateway tools a
 Project settings cannot enable WebMCP or weaken confirmation.
 See [WebMCP setup and troubleshooting](./docs/browser-setup.md#experimental-webmcp) for compatible Chrome builds, browser flags, schema limits, and stale-page recovery.
 
-## 🛠️ Tools
+## Tools
 
 Navigation and inspection:
 
@@ -197,7 +209,7 @@ Existing regular files at the target path are replaced.
 The tool result includes the resolved path, byte count, and an inline image block when the active model/provider can consume images.
 If the model cannot inspect the inline image, ask it to read the saved path, for example `read({ path: "artifacts/homepage.png" })`.
 
-## 💬 Commands
+## Commands
 
 | Command | Purpose |
 | --- | --- |
@@ -219,7 +231,7 @@ Failed apply leaves previous tool availability and settings intact and retains t
 Browser settings instead save immediately, and closing the flow does not undo them.
 See [Browser setup](./docs/browser-setup.md) for prerequisites and environment-override precedence, and [Experimental WebMCP](#experimental-webmcp) before enabling its gateways.
 
-## ⚙️ Settings
+## Settings
 
 The available capability names are saved to:
 
@@ -315,7 +327,7 @@ Two consequences worth knowing:
 Quit that browser the way you quit any other (⌘Q). A signal leaves the profile marked as an unclean
 exit, and Chrome then offers to restore pages on every later launch.
 
-## 🔒 Security and privacy
+## Security and privacy
 
 A CDP connection can inspect and change browser content, execute JavaScript, and access the selected browser profile's authenticated pages.
 Connect only to trusted endpoints and profiles.
@@ -331,7 +343,7 @@ Unpacked extensions run privileged browser code and are loaded only into an isol
 WebMCP page tools use the visible page's authentication and require confirmation before every call.
 Screenshot output is restricted to the current working directory or OS temporary directory as described above.
 
-## 🧠 Use cases
+## Use cases
 
 - Debug front-end applications with an AI coding agent.
 - Verify DOM state after code changes.
@@ -339,7 +351,7 @@ Screenshot output is restricted to the current working directory or OS temporary
 - Drive local browser workflows without a separate MCP server.
 - Combine with Pi coding tools for end-to-end web app fixes.
 
-## 🗂️ Package layout
+## Package layout
 
 ```text
 pi-extensions/chrome-devtools/
@@ -363,7 +375,7 @@ pi-extensions/chrome-devtools/
 
 The generated runtime is built from `src/index.ts` and does not import back into `src`.
 
-## 🧪 Development
+## Development
 
 ```bash
 npm install
@@ -375,11 +387,7 @@ npm run smoke:e2e  # drives a real headless Chrome end to end
 exercises snapshots, real input, waiting, console and network recording, emulation, and raw CDP
 against it. Point it at another binary with `PI_CHROME_DEVTOOLS_BROWSER`.
 
-## 🔎 Keywords
-
-Pi extension, Pi coding agent, Chrome DevTools Protocol, CDP, WebMCP, browser automation, web debugging, JavaScript evaluation, screenshot automation, AI coding agent tools.
-
-## 📄 License
+## License
 
 MIT.
 See [`LICENSE`](./LICENSE).
