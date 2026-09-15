@@ -24,6 +24,10 @@ const DEFAULT_SEARCH_CONTEXT_SIZE: SearchContextSize = "medium";
 const DEFAULT_MAX_OUTPUT_TOKENS = 6_000;
 const MAX_CONFIGURED_OUTPUT_TOKENS = 128_000;
 const MAX_RETRIES = 2;
+const FIND_HEADER = /Source: find\((\{.*\})\); Total lines: \d+\s*$/;
+const PAGE_LINE = /^L(\d+):/;
+const BLANK_PAGE_LINE = /^L\d+:\s*$/;
+const FIND_CONTEXT_LINES = 2;
 
 const SearchQuerySchema = Type.Object({
 	q: Type.String({ description: "Search query" }),
@@ -274,6 +278,64 @@ function recentSearchInput(ctx: any): unknown[] | undefined {
 	return input.length > 0 ? input : undefined;
 }
 
+function findPattern(header: string): string | undefined {
+	const match = FIND_HEADER.exec(header);
+	if (!match) return undefined;
+	try {
+		const pattern = (JSON.parse(match[1]) as { pattern?: unknown }).pattern;
+		return typeof pattern === "string" && pattern.trim() ? pattern : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function normalizeForMatch(value: string): string {
+	return value.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+// The endpoint answers find with a window of the page rather than the matching lines, so a hit on
+// a long page (a GitHub blob, with its line-number gutter) is buried in hundreds of lines. Reduce
+// each find block to its matching lines with a little context; leave it as returned when nothing
+// matches locally.
+function focusFindResults(output: string): string {
+	const lines = output.split("\n");
+	const focused: string[] = [];
+	let index = 0;
+	while (index < lines.length) {
+		const header = lines[index++];
+		focused.push(header);
+		const pattern = findPattern(header);
+		if (!pattern) continue;
+
+		const start = index;
+		while (index < lines.length && PAGE_LINE.test(lines[index])) index++;
+		if (index === start) continue;
+		const window = lines.slice(start, index);
+		const range = `L${PAGE_LINE.exec(window[0])?.[1]}–L${PAGE_LINE.exec(window[window.length - 1])?.[1]}`;
+		const needle = normalizeForMatch(pattern);
+		const body = window.filter((line) => !BLANK_PAGE_LINE.test(line));
+		const hits = body.map((line) => normalizeForMatch(line.replace(PAGE_LINE, "")).includes(needle));
+		const hitCount = hits.filter(Boolean).length;
+		if (hitCount === 0) {
+			focused.push(`[find: no line in the returned window ${range} contains ${JSON.stringify(pattern)}; window shown as returned]`, ...window);
+			continue;
+		}
+
+		const shown = hits.map((_, i) => hits.slice(Math.max(0, i - FIND_CONTEXT_LINES), i + FIND_CONTEXT_LINES + 1).includes(true));
+		focused.push(
+			`[find: ${hitCount} line${hitCount === 1 ? "" : "s"} in the returned window ${range} match${hitCount === 1 ? "es" : ""} ${JSON.stringify(pattern)}; matches marked ">", ${FIND_CONTEXT_LINES} lines of context, blank lines omitted]`,
+		);
+		let previous = -1;
+		for (let i = 0; i < body.length; i++) {
+			if (!shown[i]) continue;
+			if (previous >= 0 && i > previous + 1) focused.push("…");
+			focused.push(`${hits[i] ? ">" : " "} ${body[i]}`);
+			previous = i;
+		}
+	}
+	return focused.join("\n");
+}
+
 function normalizeCommands(params: WebSearchInput): WebSearchInput {
 	const commands = { ...params };
 	const queryCount = commands.search_query?.length ?? 0;
@@ -465,7 +527,8 @@ export default function (pi: ExtensionAPI) {
 			if (input) body.input = input;
 
 			const response = await requestSearch(endpoint, token, accountId, body, signal);
-			const output = response.output || JSON.stringify(response.results ?? [], null, 2);
+			let output = response.output || JSON.stringify(response.results ?? [], null, 2);
+			if (commands.find) output = focusFindResults(output);
 			const truncation = truncateHead(output, {
 				maxLines: DEFAULT_MAX_LINES,
 				maxBytes: DEFAULT_MAX_BYTES,

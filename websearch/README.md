@@ -61,6 +61,10 @@ Supported inputs mirror Codex's standalone search commands:
 Reference IDs returned by a search can be reused by later `open`, `click`, `find`, and
 `screenshot` calls in the same Pi session.
 
+The endpoint answers `find` with a window of the page, not the matching lines. Each `find` result
+is reduced to the lines containing the pattern (case-insensitive, marked `>`) with two lines of
+context; when nothing in the window matches, it is returned unchanged.
+
 Only `search_query` carries Codex's explicit four-query limit. Other supplied operation arrays
 must be non-empty but have no blanket four-item cap. Positive day/game counts and non-negative
 line/link/page indexes are still validated.
