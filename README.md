@@ -17,11 +17,11 @@
 
 ## 亮点
 
-- **CDP 会话池**：[chrome-devtools](./chrome-devtools) 的浏览器连接跨工具调用保持打开。浏览器可以保留用户配置、比会话活得更久，登录状态下次还在。
-- **稳定的元素引用**：DOM 快照给每个元素分配固定 ref，模型按 ref 点击和填写，发出真实的鼠标和键盘事件。
-- **按需加载工具**：在支持的模型上，工具通过 `chrome_devtools_load` 按需加载，不占满提示词。
-- **复用已有凭据的搜索**：[websearch](./websearch) 走 OpenAI Codex 的搜索接口，使用 Pi 已持有的 `openai-codex` 凭据。它不读 `~/.codex/auth.json`，不爬搜索结果页，也不启动嵌套代理。
-- **单仓库多扩展**：用 npm workspaces 管理，解决了 Pi 安装 git 包时只在根目录执行 `npm install` 的问题，详见下方“开发须知”。
+- CDP 会话池：[chrome-devtools](./chrome-devtools) 的浏览器连接跨工具调用保持打开。浏览器可以保留用户配置，会话结束后继续运行，下次登录状态还在。
+- 稳定的元素引用：DOM 快照给每个元素分配固定 ref，模型按 ref 点击和填写，发出真实的鼠标和键盘事件。
+- 按需加载工具：在支持的模型上，工具通过 `chrome_devtools_load` 按需加载，不预先写进提示词。
+- 复用已有凭据的搜索：[websearch](./websearch) 走 OpenAI Codex 的搜索接口，使用 Pi 已持有的 `openai-codex` 凭据。它不读 `~/.codex/auth.json`，不爬搜索结果页，也不启动嵌套代理。
+- 单仓库多扩展：用 npm workspaces 管理，解决了 Pi 安装 git 包时只在根目录执行 `npm install` 的问题，见下方“注意事项”。
 
 ## 工具一览
 
@@ -76,7 +76,7 @@ npm run check
 cd chrome-devtools && npm run smoke:e2e
 ```
 
-### 开发须知
+### 注意事项
 
 新增扩展前需要知道两点。
 
