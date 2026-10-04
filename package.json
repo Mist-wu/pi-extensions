@@ -8,6 +8,7 @@
 	"keywords": [
 		"pi-package",
 		"pi-extension",
+		"pi-skill",
 		"pi"
 	],
 	"homepage": "https://github.com/Mist-wu/pi-extensions#readme",
@@ -26,6 +27,9 @@
 		"extensions": [
 			"./chrome-devtools/src/index.ts",
 			"./websearch/index.ts"
+		],
+		"skills": [
+			"./skills"
 		]
 	},
 	"scripts": {

@@ -2,9 +2,9 @@
 
 # pi-extensions
 
-**我自己写、每天在用的 Pi Coding Agent 扩展。**
+**我自己写、每天在用的 Pi Coding Agent 扩展和技能。**
 
-一条命令安装两个扩展：用 Chrome DevTools 协议操作浏览器，以及联网搜索。两者都是 Pi 原生工具，不需要 MCP 服务或额外进程。
+一条命令安装两个扩展和一个技能：用 Chrome DevTools 协议操作浏览器、联网搜索，以及总结 B站视频。扩展都是 Pi 原生工具，不需要 MCP 服务或额外进程。
 
 [![pi](https://img.shields.io/badge/pi-extension-2563eb)](https://pi.dev)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
@@ -21,6 +21,7 @@
 - 稳定的元素引用：DOM 快照给每个元素分配固定 ref，模型按 ref 点击和填写，发出真实的鼠标和键盘事件。
 - 按需加载工具：在支持的模型上，工具通过 `chrome_devtools_load` 按需加载，不预先写进提示词。
 - 复用已有凭据的搜索：[websearch](./websearch) 走 OpenAI Codex 的搜索接口，使用 Pi 已持有的 `openai-codex` 凭据。它不读 `~/.codex/auth.json`，不爬搜索结果页，也不启动嵌套代理。
+- 会核实内容的视频总结：[bvsum](./skills/bvsum) 下载 B站视频的音频，取官方字幕或用本地 Whisper 转录，再用 `web_search` 核实视频里的事实性说法。总结不套固定模板，形式由视频内容决定。
 - 单仓库多扩展：用 npm workspaces 管理，解决了 Pi 安装 git 包时只在根目录执行 `npm install` 的问题，见下方“注意事项”。
 
 ## 工具一览
@@ -35,6 +36,8 @@ fill         press         wait_for   console    network      emulate    cdp_sen
 `console` 和 `network` 保留滚动日志；`emulate` 模拟设备；`cdp_send` 直接发送原始协议命令，覆盖封装之外的情况。另有两个 WebMCP 工具，需要在设置里开启。
 
 **websearch**：一个工具 `web_search`，支持 `search`、`open`、`click` 和 `find` 四种命令。
+
+**bvsum**（技能）：`/skill:bvsum <B站链接或BV号>`，或直接让 Pi 总结一个 B站链接。依赖 Python 3、ffmpeg，以及 `uvx`（mlx-whisper）或 `whisper-cli`。音频和字稿放在 `/tmp/bvsum/<BV号>/`，重启后清空。
 
 ## 快速开始
 
@@ -56,9 +59,11 @@ pi install git:github.com/Mist-wu/pi-extensions
 
 ```text
 pi-extensions/
-├── package.json          # npm workspaces 和 pi.extensions 入口列表
+├── package.json          # npm workspaces、pi.extensions 入口列表和 pi.skills 目录
 ├── chrome-devtools/
-└── websearch/
+├── websearch/
+└── skills/
+    └── bvsum/
 ```
 
 目录是平铺的，因为 Pi 只往下找一层扩展目录：`chrome-devtools/` 能找到，`packages/chrome-devtools/` 找不到。
