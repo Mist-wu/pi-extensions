@@ -17,7 +17,7 @@
 - 稳定的元素引用：DOM 快照给每个元素分配固定 ref，模型按 ref 点击和填写，发出真实的鼠标和键盘事件。
 - 按需加载工具：在支持的模型上，工具通过 `chrome_devtools_load` 按需加载，不预先写进提示词。
 - 复用已有凭据的搜索：[websearch](./websearch) 走 OpenAI Codex 的搜索接口，使用 Pi 已持有的 `openai-codex` 凭据。它不读 `~/.codex/auth.json`，不爬搜索结果页，也不启动嵌套代理。
-- 会核实内容的视频总结：[bvsum](./skills/bvsum) 下载 B站视频的音频，取官方字幕或用本地 Whisper 转录，再用 `web_search` 核实视频里的事实性说法。总结不套固定模板，形式由视频内容决定。
+- B站视频总结：[bvsum](./skills/bvsum) 下载 B站视频的音频，取官方字幕或用本地 Whisper 转录，必要时用 `web_search` 补充。总结不套固定模板，形式由视频内容决定。
 - 单仓库多扩展：用 npm workspaces 管理，解决了 Pi 安装 git 包时只在根目录执行 `npm install` 的问题，见下方“注意事项”。
 
 ## 工具一览
