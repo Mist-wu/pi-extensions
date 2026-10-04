@@ -2,10 +2,6 @@
 
 # pi-extensions
 
-**我自己写、每天在用的 Pi Coding Agent 扩展和技能。**
-
-一条命令安装两个扩展和一个技能：用 Chrome DevTools 协议操作浏览器、联网搜索，以及总结 B站视频。扩展都是 Pi 原生工具，不需要 MCP 服务或额外进程。
-
 [![pi](https://img.shields.io/badge/pi-extension-2563eb)](https://pi.dev)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Node](https://img.shields.io/badge/node-%E2%89%A5%2022.19-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
