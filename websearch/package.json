@@ -19,7 +19,8 @@
 	},
 	"scripts": {
 		"typecheck": "tsc --noEmit",
-		"check": "npm run typecheck"
+		"test": "node --experimental-strip-types --test test/websearch.test.ts",
+		"check": "npm run typecheck && npm run test"
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-ai": "*",

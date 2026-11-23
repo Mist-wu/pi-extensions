@@ -31,7 +31,7 @@ fill         press         wait_for   console    network      emulate    cdp_sen
 
 `console` 和 `network` 保留滚动日志；`emulate` 模拟设备；`cdp_send` 直接发送原始协议命令，覆盖封装之外的情况。另有两个 WebMCP 工具，需要在设置里开启。
 
-**websearch**：一个工具 `web_search`，支持 `search`、`open`、`click` 和 `find` 四种命令。
+**websearch**：一个工具 `web_search`，支持 `search_query`、`image_query`、`open`、`click`、`find`、`screenshot` 及 `finance`、`weather`、`sports`、`time` 查询。
 
 **bvsum**（技能）：`/skill:bvsum <B站链接或BV号>`，或直接让 Pi 总结一个 B站链接。依赖 Python 3、ffmpeg，以及 `uvx`（mlx-whisper）或 `whisper-cli`。音频和字稿放在 `/tmp/bvsum/<BV号>/`，重启后清空。
 
@@ -71,7 +71,7 @@ npm install
 npm run check
 ```
 
-`check` 会在每个 workspace 里执行构建、lint、类型检查和测试。chrome-devtools 还有驱动真实 Chrome 的端到端测试：
+`check` 会依次运行各 workspace 的检查（`chrome-devtools` 执行构建、lint、类型检查和单元测试；`websearch` 执行类型检查）。chrome-devtools 还有驱动真实 Chrome 的端到端测试：
 
 ```bash
 cd chrome-devtools && npm run smoke:e2e

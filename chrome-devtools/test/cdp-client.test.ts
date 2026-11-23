@@ -177,6 +177,9 @@ test("selected pages remain scoped to their session manager", async () => {
 		endpointSource: "user",
 		autoLaunchSource: "user",
 		executablePathSource: "default",
+		userDataDirSource: "default",
+		keepAliveEnabled: false,
+		keepAliveSource: "default",
 		extensionPathsSource: "default",
 	});
 	syncManagedBrowserSettings(secondOwner, {
@@ -190,6 +193,9 @@ test("selected pages remain scoped to their session manager", async () => {
 		endpointSource: "user",
 		autoLaunchSource: "user",
 		executablePathSource: "default",
+		userDataDirSource: "default",
+		keepAliveEnabled: false,
+		keepAliveSource: "default",
 		extensionPathsSource: "default",
 	});
 	const restore = setBrowserManagerOperationsForTests({

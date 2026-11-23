@@ -8,9 +8,10 @@ import {
 	resolvePageForNavigation,
 	setActivePageId,
 	textResult,
-	withCdp,
 } from "./cdp-client.js";
+import { withSession } from "./cdp-session.js";
 import { renderScreenshotResult, renderTextResult, renderToolCall, withStatus } from "./render.js";
+import { assertPageOperationCurrent, beginPageOperation } from "./runtime.js";
 import { formatScreenshotText, saveScreenshot, throwIfAborted } from "./screenshot.js";
 import { CHROME_DEVTOOLS_TOOL_NAMES, WEBMCP_TOOL_NAMES } from "./tool-names.js";
 
@@ -23,7 +24,13 @@ export const listPagesTool = defineTool({
 	renderResult: renderTextResult,
 	async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
 		return withStatus(ctx, "list pages", async () => {
-			const pages = await listPages({ sessionOwner: ctx.sessionManager, signal });
+			const operation = beginPageOperation(ctx.sessionManager, signal);
+			const pages = await listPages({
+				operation,
+				sessionOwner: ctx.sessionManager,
+				signal: operation.signal,
+			});
+			assertPageOperationCurrent(operation);
 			return textResult(JSON.stringify(pages.map(formatPage), null, 2), { pages });
 		});
 	},
@@ -40,8 +47,14 @@ export const selectPageTool = defineTool({
 	renderResult: renderTextResult,
 	async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 		return withStatus(ctx, "select page", async () => {
-			const page = await getPage(params.pageId, { sessionOwner: ctx.sessionManager, signal });
-			setActivePageId(ctx.sessionManager, page.id);
+			const operation = beginPageOperation(ctx.sessionManager, signal);
+			const page = await getPage(params.pageId, {
+				operation,
+				sessionOwner: ctx.sessionManager,
+				signal: operation.signal,
+			});
+			assertPageOperationCurrent(operation);
+			setActivePageId(ctx.sessionManager, page.id, operation);
 			return textResult(`Selected page ${page.id}: ${page.title}\n${page.url}`, {
 				page: formatPage(page),
 			});
@@ -64,16 +77,25 @@ export const navigateTool = defineTool({
 	renderResult: renderTextResult,
 	async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 		return withStatus(ctx, "navigate", async () => {
+			const operation = beginPageOperation(ctx.sessionManager, signal);
 			const { created, page } = await resolvePageForNavigation(params.pageId, {
+				operation,
 				sessionOwner: ctx.sessionManager,
-				signal,
+				signal: operation.signal,
 			});
-			const result = await withCdp(page, async (client) => {
-				await client.send("Page.enable");
-				return client.send("Page.navigate", { url: params.url });
-			});
+			const result = await withSession(
+				page,
+				ctx.sessionManager,
+				async (session) => {
+					assertPageOperationCurrent(operation);
+					await session.ensureDomains(["Page"], { signal: operation.signal });
+					return session.send("Page.navigate", { url: params.url }, { signal: operation.signal });
+				},
+				{ operation, signal: operation.signal },
+			);
 
-			setActivePageId(ctx.sessionManager, page.id);
+			assertPageOperationCurrent(operation);
+			setActivePageId(ctx.sessionManager, page.id, operation);
 			const action = created ? "Created page and navigated" : "Navigated";
 			return textResult(`${action} ${page.id} to ${params.url}`, {
 				created,
@@ -101,19 +123,33 @@ export const evaluateTool = defineTool({
 	renderResult: renderTextResult,
 	async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 		return withStatus(ctx, "evaluate", async () => {
+			const operation = beginPageOperation(ctx.sessionManager, signal);
 			const page = await resolvePage(params.pageId, {
+				operation,
 				sessionOwner: ctx.sessionManager,
-				signal,
+				signal: operation.signal,
 			});
-			const result = await withCdp(page, (client) =>
-				client.send("Runtime.evaluate", {
-					expression: params.expression,
-					awaitPromise: params.awaitPromise ?? true,
-					returnByValue: true,
-				}),
+			const result = await withSession(
+				page,
+				ctx.sessionManager,
+				async (session) => {
+					assertPageOperationCurrent(operation);
+					await session.ensureDomains(["Runtime"], { signal: operation.signal });
+					return session.send(
+						"Runtime.evaluate",
+						{
+							expression: params.expression,
+							awaitPromise: params.awaitPromise ?? true,
+							returnByValue: true,
+						},
+						{ signal: operation.signal },
+					);
+				},
+				{ operation, signal: operation.signal },
 			);
 
-			setActivePageId(ctx.sessionManager, page.id);
+			assertPageOperationCurrent(operation);
+			setActivePageId(ctx.sessionManager, page.id, operation);
 			return textResult(JSON.stringify(result, null, 2), { page: formatPage(page), result });
 		});
 	},
@@ -208,38 +244,60 @@ export const screenshotTool = defineTool({
 	renderResult: renderScreenshotResult,
 	async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 		return withStatus(ctx, "screenshot", async () => {
+			const operation = beginPageOperation(ctx.sessionManager, signal);
 			const page = await resolvePage(params.pageId, {
+				operation,
 				sessionOwner: ctx.sessionManager,
-				signal,
+				signal: operation.signal,
 			});
-			const result = await withCdp(page, async (client) => {
-				throwIfAborted(signal);
-				await client.send("Page.enable");
+			const result = await withSession(
+				page,
+				ctx.sessionManager,
+				async (session) => {
+					assertPageOperationCurrent(operation);
+					throwIfAborted(operation.signal);
+					await session.ensureDomains(["Page"], { signal: operation.signal });
 
-				if (!params.fullPage) {
-					return client.send<{ data: string }>("Page.captureScreenshot", { format: "png" });
-				}
+					if (!params.fullPage) {
+						return session.send<{ data: string }>(
+							"Page.captureScreenshot",
+							{ format: "png" },
+							{ signal: operation.signal },
+						);
+					}
 
-				const metrics = await client.send<{
-					contentSize: { x: number; y: number; width: number; height: number };
-				}>("Page.getLayoutMetrics");
+					const metrics = await session.send<{
+						contentSize: { x: number; y: number; width: number; height: number };
+					}>("Page.getLayoutMetrics", {}, { signal: operation.signal });
 
-				throwIfAborted(signal);
-				return client.send<{ data: string }>("Page.captureScreenshot", {
-					captureBeyondViewport: true,
-					format: "png",
-					clip: {
-						x: metrics.contentSize.x,
-						y: metrics.contentSize.y,
-						width: metrics.contentSize.width,
-						height: metrics.contentSize.height,
-						scale: 1,
-					},
-				});
-			});
+					throwIfAborted(operation.signal);
+					return session.send<{ data: string }>(
+						"Page.captureScreenshot",
+						{
+							captureBeyondViewport: true,
+							format: "png",
+							clip: {
+								x: metrics.contentSize.x,
+								y: metrics.contentSize.y,
+								width: metrics.contentSize.width,
+								height: metrics.contentSize.height,
+								scale: 1,
+							},
+						},
+						{ signal: operation.signal },
+					);
+				},
+				{ operation, signal: operation.signal },
+			);
 
-			setActivePageId(ctx.sessionManager, page.id);
-			const savedScreenshot = await saveScreenshot(result.data, params.savePath, ctx.cwd, signal);
+			assertPageOperationCurrent(operation);
+			setActivePageId(ctx.sessionManager, page.id, operation);
+			const savedScreenshot = await saveScreenshot(
+				result.data,
+				params.savePath,
+				ctx.cwd,
+				operation.signal,
+			);
 			return {
 				content: [
 					{

@@ -110,10 +110,16 @@ export function snapshotScript(limit: number, includeText: boolean) {
 
 	const shortSelector = (el) => {
 		if (el.id) return '#' + CSS.escape(el.id);
+		const escapeAttr = (value) => value.replace(/\\\\/g, '\\\\\\\\').replace(/"/g, '\\\\"');
 		const name = el.getAttribute('name');
-		if (name) return el.tagName.toLowerCase() + '[name="' + name.replace(/"/g, '\\\\"') + '"]';
-		const testId = el.getAttribute('data-testid') || el.getAttribute('data-test-id');
-		if (testId) return '[data-testid="' + testId.replace(/"/g, '\\\\"') + '"]';
+		if (name) return el.tagName.toLowerCase() + '[name="' + escapeAttr(name) + '"]';
+		const testIdAttr = el.hasAttribute('data-testid')
+			? 'data-testid'
+			: el.hasAttribute('data-test-id')
+				? 'data-test-id'
+				: null;
+		const testId = testIdAttr ? el.getAttribute(testIdAttr) : null;
+		if (testId) return '[' + testIdAttr + '="' + escapeAttr(testId) + '"]';
 		const parent = el.parentElement;
 		if (!parent) return el.tagName.toLowerCase();
 		const siblings = [...parent.children].filter((node) => node.tagName === el.tagName);
@@ -161,22 +167,37 @@ export function snapshotScript(limit: number, includeText: boolean) {
 })()`;
 }
 
-/** Resolve a ref or selector to viewport coordinates, scrolling it into view first. */
-export function resolveElementScript(target: { ref?: string; selector?: string }) {
+function elementLookupPrelude(target: { ref?: string; selector?: string }) {
 	const lookup = target.ref
 		? `registry.map.get(${JSON.stringify(target.ref)})`
 		: `document.querySelector(${JSON.stringify(target.selector ?? "")})`;
 	const label = target.ref
 		? `ref ${JSON.stringify(target.ref)}`
 		: `selector ${JSON.stringify(target.selector ?? "")}`;
-	return `(() => {
-	${REGISTRY_BOOTSTRAP}
+	const notFoundMessage = JSON.stringify(
+		`No element for ${label}. Take a fresh chrome_devtools_snapshot.`,
+	);
+	const disconnectedMessage = JSON.stringify(
+		`Element for ${label} left the document. Take a fresh chrome_devtools_snapshot.`,
+	);
+	return {
+		label,
+		prelude: `${REGISTRY_BOOTSTRAP}
 	const el = ${lookup};
-	if (!el) throw new Error('No element for ${label}. Take a fresh chrome_devtools_snapshot.');
-	if (!el.isConnected) throw new Error('Element for ${label} left the document. Take a fresh chrome_devtools_snapshot.');
+	if (!el) throw new Error(${notFoundMessage});
+	if (!el.isConnected) throw new Error(${disconnectedMessage});`,
+	};
+}
+
+/** Resolve a ref or selector to viewport coordinates, scrolling it into view first. */
+export function resolveElementScript(target: { ref?: string; selector?: string }) {
+	const { label, prelude } = elementLookupPrelude(target);
+	const noLayoutBoxMessage = JSON.stringify(`Element for ${label} has no layout box.`);
+	return `(() => {
+	${prelude}
 	el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
 	const rect = el.getBoundingClientRect();
-	if (rect.width <= 0 || rect.height <= 0) throw new Error('Element for ${label} has no layout box.');
+	if (rect.width <= 0 || rect.height <= 0) throw new Error(${noLayoutBoxMessage});
 	return {
 		x: rect.left + rect.width / 2,
 		y: rect.top + rect.height / 2,
@@ -191,17 +212,9 @@ export function resolveElementScript(target: { ref?: string; selector?: string }
 
 /** Focus an element and clear it, so a following Input.insertText replaces rather than appends. */
 export function focusAndClearScript(target: { ref?: string; selector?: string }, clear: boolean) {
-	const lookup = target.ref
-		? `registry.map.get(${JSON.stringify(target.ref)})`
-		: `document.querySelector(${JSON.stringify(target.selector ?? "")})`;
-	const label = target.ref
-		? `ref ${JSON.stringify(target.ref)}`
-		: `selector ${JSON.stringify(target.selector ?? "")}`;
+	const { prelude } = elementLookupPrelude(target);
 	return `(() => {
-	${REGISTRY_BOOTSTRAP}
-	const el = ${lookup};
-	if (!el) throw new Error('No element for ${label}. Take a fresh chrome_devtools_snapshot.');
-	if (!el.isConnected) throw new Error('Element for ${label} left the document. Take a fresh chrome_devtools_snapshot.');
+	${prelude}
 	el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
 	el.focus();
 	if (${clear ? "true" : "false"}) {

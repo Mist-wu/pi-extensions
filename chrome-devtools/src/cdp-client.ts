@@ -7,9 +7,12 @@ import {
 	withEndpointRetry,
 } from "./browser-manager.js";
 import {
+	assertPageOperationCurrent,
 	DEFAULT_ENDPOINT_WAIT_MS,
 	DEFAULT_TIMEOUT_MS,
 	type DevToolsPage,
+	type PageOperation,
+	pageOperationCurrent,
 	state,
 } from "./runtime.js";
 
@@ -63,6 +66,7 @@ const MAX_CDP_MESSAGE_BYTES = 8 * 1024 * 1024;
 const activePageIds = new WeakMap<object, string>();
 
 interface PageOperationOptions {
+	operation?: PageOperation;
 	sessionOwner?: object;
 	signal?: AbortSignal;
 	waitMs?: number;
@@ -70,18 +74,23 @@ interface PageOperationOptions {
 
 export async function listPages(options: PageOperationOptions = {}) {
 	const waitMs = options.waitMs ?? DEFAULT_ENDPOINT_WAIT_MS;
-	await ensureDevToolsEndpoint(waitMs, options.signal, options.sessionOwner);
+	const signal = options.operation?.signal ?? options.signal;
+	assertPageOperationCurrent(options.operation);
+	await ensureDevToolsEndpoint(waitMs, signal, options.sessionOwner);
+	assertPageOperationCurrent(options.operation);
 	return withEndpointRetry(
 		async () => {
+			assertPageOperationCurrent(options.operation);
 			const pages = await fetchDevToolsJson<DevToolsPage[]>(
 				"/json/list",
-				{ signal: options.signal },
+				{ signal },
 				options.sessionOwner,
 			);
+			assertPageOperationCurrent(options.operation);
 			return pages.filter((page) => page.type === "page" && page.webSocketDebuggerUrl);
 		},
 		waitMs,
-		options.signal,
+		signal,
 	);
 }
 
@@ -132,7 +141,12 @@ function resolveDefaultPage(pages: DevToolsPage[], owner?: object) {
 	return pages[0];
 }
 
-export function setActivePageId(owner: object | undefined, pageId: string | undefined) {
+export function setActivePageId(
+	owner: object | undefined,
+	pageId: string | undefined,
+	operation?: PageOperation,
+) {
+	if (operation && !pageOperationCurrent(operation)) return;
 	if (!owner) {
 		state.activePageId = pageId;
 		return;
@@ -158,17 +172,21 @@ function requirePage(pageId: string, pages: DevToolsPage[]) {
 
 export async function createPage(url: string, options: PageOperationOptions = {}) {
 	const waitMs = options.waitMs ?? DEFAULT_ENDPOINT_WAIT_MS;
-	await ensureDevToolsEndpoint(waitMs, options.signal, options.sessionOwner);
+	const signal = options.operation?.signal ?? options.signal;
+	assertPageOperationCurrent(options.operation);
+	await ensureDevToolsEndpoint(waitMs, signal, options.sessionOwner);
+	assertPageOperationCurrent(options.operation);
 	const page = await withEndpointRetry(
 		() =>
 			fetchDevToolsJson<DevToolsPage>(
 				`/json/new?${encodeURIComponent(url)}`,
-				{ method: "PUT", signal: options.signal },
+				{ method: "PUT", signal },
 				options.sessionOwner,
 			),
 		waitMs,
-		options.signal,
+		signal,
 	);
+	assertPageOperationCurrent(options.operation);
 	if (page.type !== "page" || !page.webSocketDebuggerUrl) {
 		throw new Error("Chrome DevTools created a target that is not an inspectable page.");
 	}
@@ -190,21 +208,6 @@ export function textResult<T>(text: string, details: T) {
 		content: [{ type: "text" as const, text }],
 		details,
 	};
-}
-
-export async function withCdp<T>(
-	page: DevToolsPage,
-	callback: (client: CdpClient) => Promise<T>,
-	options: CdpConnectOptions = {},
-) {
-	if (!page.webSocketDebuggerUrl) throw new Error(`Page has no webSocketDebuggerUrl: ${page.id}`);
-
-	const client = await CdpClient.connect(page.webSocketDebuggerUrl, options);
-	try {
-		return await callback(client);
-	} finally {
-		client.close();
-	}
 }
 
 export class CdpClient {

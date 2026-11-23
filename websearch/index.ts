@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
@@ -181,7 +181,6 @@ function accountIdFromToken(token: string): string {
 function endpointForBaseUrl(baseUrl: string): string {
 	const base = baseUrl.trim().replace(/\/+$/, "");
 	if (/\/codex$/i.test(base)) return `${base}/alpha/search`;
-	if (/\/backend-api$/i.test(base)) return `${base}/codex/alpha/search`;
 	return `${base}/codex/alpha/search`;
 }
 
@@ -228,7 +227,7 @@ function truncateUtf8ToBytes(value: string, maxBytes: number): string {
 	return includeMarker ? `${value.slice(0, end)}${marker}` : value.slice(0, end);
 }
 
-function recentSearchInput(ctx: any): unknown[] | undefined {
+function recentSearchInput(ctx: ExtensionContext): unknown[] | undefined {
 	const entries = ctx.sessionManager.getBranch() as Array<{ type?: string; message?: unknown }>;
 	const visible = entries
 		.filter((entry) => entry.type === "message")
@@ -360,7 +359,7 @@ function hasCommand(params: WebSearchInput): boolean {
 	].some((value) => (value?.length ?? 0) > 0);
 }
 
-function pickSearchModel(ctx: any): string {
+function pickSearchModel(ctx: ExtensionContext): string {
 	if (ctx.model?.provider === PROVIDER_ID && typeof ctx.model.id === "string") return ctx.model.id;
 	const available = ctx.modelRegistry
 		.getAvailable()
@@ -422,7 +421,10 @@ function retryDelayMs(response: Response, attempt: number): number {
 async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 	if (signal?.aborted) throw new Error("Web search cancelled");
 	await new Promise<void>((resolve, reject) => {
-		const timer = setTimeout(resolve, ms);
+		const timer = setTimeout(() => {
+			signal?.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
 		const onAbort = () => {
 			clearTimeout(timer);
 			reject(new Error("Web search cancelled"));
@@ -433,6 +435,14 @@ async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 function safeErrorBody(text: string): string {
 	return text.replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [redacted]").slice(0, MAX_ERROR_BODY_CHARS);
+}
+
+function isSearchPayload(value: unknown): value is SearchResponse {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		typeof (value as { output?: unknown }).output === "string"
+	);
 }
 
 async function requestSearch(
@@ -469,8 +479,19 @@ async function requestSearch(
 		}
 
 		if (response.ok) {
-			const payload = await response.json() as SearchResponse;
-			if (typeof payload.output !== "string") throw new Error("Codex web search returned no text output");
+			if (signal?.aborted) throw new Error("Web search cancelled");
+			let payload: unknown;
+			try {
+				payload = await response.json();
+			} catch (error) {
+				if (signal?.aborted) throw new Error("Web search cancelled");
+				throw new Error(
+					`Codex web search returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+			if (!isSearchPayload(payload)) {
+				throw new Error("Codex web search returned no text output");
+			}
 			return payload;
 		}
 

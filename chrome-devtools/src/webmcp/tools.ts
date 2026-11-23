@@ -1,5 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { managedBrowserForOwner } from "../browser-manager.js";
+import { browserCustody } from "../browser-manager.js";
 import { getPage, resolvePage, textResult } from "../cdp-client.js";
 import {
 	beginWebMcpOperation,
@@ -101,7 +101,7 @@ export async function executeWebMcpCallTool(
 			assertCurrent(operation);
 			const confirmed = await ctx.ui.confirm(
 				`Allow WebMCP tool: ${sanitizeWebMcpDisplay(current.name, 256)}`,
-				webMcpConfirmationMessage(current, validatedInput, usesManagedProfile(ctx.sessionManager)),
+				webMcpConfirmationMessage(current, validatedInput, browserCustody(ctx.sessionManager)),
 				{ signal: operation.signal },
 			);
 			assertCurrent(operation);
@@ -174,11 +174,6 @@ function assertCurrent(operation: ReturnType<typeof beginWebMcpOperation>) {
 	if (!webMcpOperationIsCurrent(operation)) {
 		throw new DOMException("The WebMCP operation became stale.", "AbortError");
 	}
-}
-
-function usesManagedProfile(owner: object) {
-	const managedBrowser = managedBrowserForOwner(owner);
-	return Boolean(managedBrowser?.ready && !managedBrowser.exited);
 }
 
 function safeToolError(error: unknown) {

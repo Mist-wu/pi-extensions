@@ -16,7 +16,7 @@ import {
 	syncManagedBrowserSettings,
 } from "./browser-manager.js";
 import { setActivePageId } from "./cdp-client.js";
-import { closeAllSessions } from "./cdp-session.js";
+import { closeSessions } from "./cdp-session.js";
 import {
 	availableChromeDevtoolsTools,
 	configureChromeDevtoolsToolExposure,
@@ -26,10 +26,13 @@ import {
 	setChromeDevtoolsSessionOwner,
 	supportsNativeDeferredToolLoading,
 } from "./lazy-tools.js";
+import { STATUS_KEY } from "./render.js";
 import {
 	applyRuntimeBrowserSettings,
 	applyRuntimeWebMcpSetting,
+	extensionSessionGeneration,
 	invalidateWebMcpOperations,
+	replaceExtensionSession,
 	setWebMcpSessionOwner,
 	state,
 	webMcpEnabled,
@@ -64,7 +67,6 @@ type CommandAction =
 	| "enable"
 	| "disable";
 type CommandContext = ExtensionCommandContext;
-const STATUS_KEY = "chrome-devtools";
 const COMMAND_COMPLETIONS = [
 	{ value: "help", label: "help", description: "Show command usage" },
 	{ value: "quickstart", label: "quickstart", description: "Show endpoint and launch help" },
@@ -103,19 +105,20 @@ export default function chromeDevtools(pi: ExtensionAPI) {
 		handler: async (args, ctx) => {
 			setChromeDevtoolsSessionOwner(pi, ctx.sessionManager);
 			initializeAvailableChromeDevtoolsTools(pi);
-			const generation = state.sessionGeneration;
+			const generation = extensionSessionGeneration(pi);
 			await handleChromeDevtoolsCommand(pi, args, ctx, generation);
 		},
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
-		const generation = ++state.sessionGeneration;
+		const generation = replaceExtensionSession(pi, "Chrome DevTools session replaced");
+		state.sessionGeneration += 1;
 		setChromeDevtoolsSessionOwner(pi, ctx.sessionManager);
 		initializeAvailableChromeDevtoolsTools(pi);
 		setWebMcpSessionOwner(ctx.sessionManager);
 		replaceSessionController("Chrome DevTools session replaced");
 		invalidateWebMcpOperations(ctx.sessionManager, "Chrome DevTools session replaced");
-		closeAllSessions(new Error("Chrome DevTools session replaced"));
+		closeSessions(ctx.sessionManager, new Error("Chrome DevTools session replaced"));
 		state.shuttingDown = false;
 		state.settingsNotice = undefined;
 		ctx.ui.setStatus(STATUS_KEY, undefined);
@@ -124,13 +127,13 @@ export default function chromeDevtools(pi: ExtensionAPI) {
 			owner: ctx.sessionManager,
 		});
 		startManagedBrowserSession(ctx.sessionManager);
-		if (generation !== state.sessionGeneration) return;
+		if (generation !== extensionSessionGeneration(pi)) return;
 		setActivePageId(ctx.sessionManager, undefined);
 		state.activePageId = undefined;
 		state.lastLaunchAttempt = undefined;
 		const projectTrusted = ctx.isProjectTrusted();
 		const settings = await loadSettings({ cwd: ctx.cwd, projectTrusted });
-		if (generation !== state.sessionGeneration) return;
+		if (generation !== extensionSessionGeneration(pi)) return;
 		applyRuntimeBrowserSettings(settings.effectiveBrowser, settings.paths, projectTrusted);
 		syncManagedBrowserSettings(ctx.sessionManager, settings.effectiveBrowser);
 		applyRuntimeWebMcpSetting(settings.effectiveWebMcpEnabled, ctx.sessionManager);
@@ -162,10 +165,11 @@ export default function chromeDevtools(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
+		replaceExtensionSession(pi, "Chrome DevTools session shut down");
 		state.sessionGeneration += 1;
 		replaceSessionController("Chrome DevTools session shut down");
 		invalidateWebMcpOperations(ctx.sessionManager, "Chrome DevTools session shut down");
-		closeAllSessions(new Error("Chrome DevTools session shut down"));
+		closeSessions(ctx.sessionManager, new Error("Chrome DevTools session shut down"));
 		ctx.ui.setStatus(STATUS_KEY, undefined);
 		const browserShutdown = shutdownManagedBrowser(undefined, {
 			cancelLaunch: true,
@@ -199,25 +203,21 @@ async function handleChromeDevtoolsCommand(
 		case "status": {
 			requireObservableUi(ctx, "status");
 			const status = await buildToolStatusMessage(pi, ctx.sessionManager);
-			if (generation !== state.sessionGeneration) return;
+			if (generation !== extensionSessionGeneration(pi)) return;
 			ctx.ui.notify(status, "info");
 			return;
 		}
 		case "settings": {
-			if (!ctx.hasUI || (ctx.mode !== "tui" && ctx.mode !== "rpc")) {
-				throw new Error("/chrome-devtools settings requires TUI or RPC mode");
-			}
+			requireObservableUi(ctx, "settings");
 			const { showChromeDevtoolsBrowserSettings } = await import("./browser-settings-menu.js");
-			if (generation !== state.sessionGeneration) return;
+			if (generation !== extensionSessionGeneration(pi)) return;
 			await showChromeDevtoolsBrowserSettings(pi, ctx, generation);
 			return;
 		}
 		case "tools": {
-			if (!ctx.hasUI || (ctx.mode !== "tui" && ctx.mode !== "rpc")) {
-				throw new Error("/chrome-devtools tools requires TUI or RPC mode");
-			}
+			requireObservableUi(ctx, "tools");
 			const { showChromeDevtoolsToolWorkflow } = await import("./menu.js");
-			if (generation !== state.sessionGeneration) return;
+			if (generation !== extensionSessionGeneration(pi)) return;
 			await showChromeDevtoolsToolWorkflow(pi, ctx, generation);
 			return;
 		}
@@ -256,7 +256,7 @@ async function showMenu(pi: ExtensionAPI, ctx: CommandContext, generation: numbe
 		throw new Error("/chrome-devtools menu requires TUI or RPC mode; use a direct subcommand");
 	}
 	const { showChromeDevtoolsMenu } = await import("./menu.js");
-	if (generation !== state.sessionGeneration) return;
+	if (generation !== extensionSessionGeneration(pi)) return;
 	await showChromeDevtoolsMenu(pi, ctx, generation);
 }
 

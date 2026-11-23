@@ -1,6 +1,6 @@
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { formatPage, resolvePage, textResult } from "./cdp-client.js";
+import { formatPage, resolvePage, setActivePageId, textResult } from "./cdp-client.js";
 import {
 	type ConsoleEntry,
 	type NetworkEntry,
@@ -16,6 +16,7 @@ import {
 	waitConditionScript,
 } from "./page-scripts.js";
 import { renderTextResult, renderToolCall, withStatus } from "./render.js";
+import { assertPageOperationCurrent, beginPageOperation, DEFAULT_TIMEOUT_MS } from "./runtime.js";
 import { CHROME_DEVTOOLS_TOOL_NAMES } from "./tool-names.js";
 
 const MAX_BODY_CHARS = 20_000;
@@ -36,7 +37,7 @@ const pageIdParameter = Type.Optional(
 async function evaluateJson<T>(
 	session: PageSession,
 	expression: string,
-	options: { signal?: AbortSignal; awaitPromise?: boolean } = {},
+	options: { signal?: AbortSignal; awaitPromise?: boolean; timeoutMs?: number } = {},
 ) {
 	const outcome = await session.send<{
 		result?: { value?: unknown };
@@ -48,7 +49,7 @@ async function evaluateJson<T>(
 			returnByValue: true,
 			awaitPromise: options.awaitPromise ?? true,
 		},
-		{ signal: options.signal },
+		{ signal: options.signal, timeoutMs: options.timeoutMs },
 	);
 	if (outcome.exceptionDetails) {
 		const description =
@@ -64,12 +65,30 @@ async function onPage<T>(
 	ctx: ToolContext,
 	pageId: string | undefined,
 	signal: AbortSignal | undefined,
-	callback: (session: PageSession, page: ReturnType<typeof formatPage>) => Promise<T>,
+	callback: (
+		session: PageSession,
+		page: ReturnType<typeof formatPage>,
+		signal: AbortSignal,
+	) => Promise<T>,
 ) {
-	const page = await resolvePage(pageId, { sessionOwner: ctx.sessionManager, signal });
-	return withSession(page, ctx.sessionManager, (session) => callback(session, formatPage(page)), {
-		signal,
+	const operation = beginPageOperation(ctx.sessionManager, signal);
+	const page = await resolvePage(pageId, {
+		operation,
+		sessionOwner: ctx.sessionManager,
+		signal: operation.signal,
 	});
+	const result = await withSession(
+		page,
+		ctx.sessionManager,
+		async (session) => {
+			assertPageOperationCurrent(operation);
+			return callback(session, formatPage(page), operation.signal);
+		},
+		{ operation, signal: operation.signal },
+	);
+	assertPageOperationCurrent(operation);
+	setActivePageId(ctx.sessionManager, page.id, operation);
+	return result;
 }
 
 export const snapshotTool = defineTool({
@@ -94,7 +113,7 @@ export const snapshotTool = defineTool({
 	renderResult: renderTextResult,
 	async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 		return withStatus(ctx, "snapshot", async () =>
-			onPage(ctx, params.pageId, signal, async (session, page) => {
+			onPage(ctx, params.pageId, signal, async (session, page, signal) => {
 				const snapshot = await evaluateJson<SnapshotResult>(
 					session,
 					snapshotScript(params.limit ?? DEFAULT_SNAPSHOT_LIMIT, params.includeHeadings ?? true),
@@ -138,7 +157,7 @@ export const clickTool = defineTool({
 	async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 		const action = params.action ?? "click";
 		return withStatus(ctx, action, async () =>
-			onPage(ctx, params.pageId, signal, async (session, page) => {
+			onPage(ctx, params.pageId, signal, async (session, page, signal) => {
 				const target = await locate(session, params, signal);
 				const base = { x: target.x, y: target.y, signal };
 
@@ -184,7 +203,7 @@ export const fillTool = defineTool({
 			throw new Error("chrome_devtools_fill requires either ref or selector.");
 		}
 		return withStatus(ctx, "fill", async () =>
-			onPage(ctx, params.pageId, signal, async (session, page) => {
+			onPage(ctx, params.pageId, signal, async (session, page, signal) => {
 				const focused = await evaluateJson<{ tag: string; focused: boolean }>(
 					session,
 					focusAndClearScript(params, params.clear ?? true),
@@ -226,7 +245,7 @@ export const pressTool = defineTool({
 	renderResult: renderTextResult,
 	async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 		return withStatus(ctx, "press", async () =>
-			onPage(ctx, params.pageId, signal, async (session, page) => {
+			onPage(ctx, params.pageId, signal, async (session, page, signal) => {
 				const times = params.repeat ?? 1;
 				for (let index = 0; index < times; index += 1) {
 					await pressKey(session, params.keys, signal);
@@ -270,17 +289,25 @@ export const waitForTool = defineTool({
 		}
 		const timeoutMs = params.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS;
 		return withStatus(ctx, "wait", async () =>
-			onPage(ctx, params.pageId, signal, async (session, page) => {
+			onPage(ctx, params.pageId, signal, async (session, page, signal) => {
 				const script = waitConditionScript(params);
 				const deadline = Date.now() + timeoutMs;
 				let polls = 0;
 				while (Date.now() < deadline) {
 					signal?.throwIfAborted();
 					polls += 1;
-					// A navigation mid-wait invalidates the execution context; retry rather than fail.
-					const satisfied = await evaluateJson<boolean>(session, script, { signal }).catch(
-						() => false,
-					);
+					const remainingMs = Math.max(100, deadline - Date.now());
+					// A navigation mid-wait invalidates the execution context; retry rather than fail,
+					// but still surface cancellations and closed CDP connections immediately.
+					let satisfied = false;
+					try {
+						satisfied = await evaluateJson<boolean>(session, script, {
+							signal,
+							timeoutMs: Math.min(DEFAULT_TIMEOUT_MS, remainingMs),
+						});
+					} catch (error) {
+						if (signal?.aborted || !session.alive) throw error;
+					}
 					if (satisfied) {
 						return textResult(`Condition met after ${polls} checks`, {
 							page,
@@ -288,7 +315,8 @@ export const waitForTool = defineTool({
 							timedOut: false,
 						});
 					}
-					await delay(WAIT_POLL_INTERVAL_MS, signal);
+					const sleepMs = Math.min(WAIT_POLL_INTERVAL_MS, deadline - Date.now());
+					if (sleepMs > 0) await delay(sleepMs, signal);
 				}
 				throw new Error(
 					`Timed out after ${timeoutMs}ms waiting for ${describeCondition(params)}. The page may not have reached that state.`,
@@ -326,7 +354,7 @@ export const consoleTool = defineTool({
 	renderResult: renderTextResult,
 	async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 		return withStatus(ctx, "console", async () =>
-			onPage(ctx, params.pageId, signal, async (session, page) => {
+			onPage(ctx, params.pageId, signal, async (session, page, _signal) => {
 				const level = params.level ?? "all";
 				const limit = params.limit ?? 100;
 				const all = session.console.toArray();
@@ -383,7 +411,7 @@ export const networkTool = defineTool({
 	renderResult: renderTextResult,
 	async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 		return withStatus(ctx, "network", async () =>
-			onPage(ctx, params.pageId, signal, async (session, page) => {
+			onPage(ctx, params.pageId, signal, async (session, page, signal) => {
 				if (params.bodyForRequestId) {
 					const body = await session.send<{ body: string; base64Encoded: boolean }>(
 						"Network.getResponseBody",
@@ -472,10 +500,11 @@ export const emulateTool = defineTool({
 	renderResult: renderTextResult,
 	async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 		return withStatus(ctx, "emulate", async () =>
-			onPage(ctx, params.pageId, signal, async (session, page) => {
+			onPage(ctx, params.pageId, signal, async (session, page, signal) => {
 				const applied: string[] = [];
 				if (params.reset) {
 					await session.send("Emulation.clearDeviceMetricsOverride", {}, { signal });
+					await session.send("Emulation.setUserAgentOverride", { userAgent: "" }, { signal });
 					await session.send("Emulation.setCPUThrottlingRate", { rate: 1 }, { signal });
 					await session.send("Emulation.setEmulatedMedia", { features: [] }, { signal });
 					await session.send(
@@ -557,11 +586,14 @@ export const cdpSendTool = defineTool({
 	renderResult: renderTextResult,
 	async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 		return withStatus(ctx, `cdp ${params.method}`, async () =>
-			onPage(ctx, params.pageId, signal, async (session, page) => {
+			onPage(ctx, params.pageId, signal, async (session, page, signal) => {
 				const result = await session.send(params.method, params.params ?? {}, { signal });
-				// Track domain enables so pooled sessions do not re-enable them on later calls.
-				const enable = params.method.match(/^([A-Za-z]+)\.enable$/);
-				if (enable?.[1]) await session.ensureDomains([enable[1]], { signal });
+				// Track domain state changes so pooled sessions do not send duplicate enables.
+				const domainToggle = params.method.match(/^([A-Za-z]+)\.(enable|disable)$/);
+				if (domainToggle?.[1]) {
+					if (domainToggle[2] === "enable") session.markDomainEnabled(domainToggle[1]);
+					else session.markDomainDisabled(domainToggle[1]);
+				}
 				const text = JSON.stringify(result, null, 2) ?? "null";
 				const truncated = text.length > MAX_BODY_CHARS;
 				return textResult(truncated ? `${text.slice(0, MAX_BODY_CHARS)}\n…truncated` : text, {
@@ -784,6 +816,9 @@ function codeForCharacter(character: string) {
 }
 
 function delay(ms: number, signal: AbortSignal | undefined) {
+	if (signal?.aborted) {
+		return Promise.reject(signal.reason ?? new DOMException("Wait aborted", "AbortError"));
+	}
 	return new Promise<void>((resolve, reject) => {
 		const timer = setTimeout(() => {
 			signal?.removeEventListener("abort", onAbort);
@@ -833,7 +868,9 @@ export function formatSnapshot(snapshot: SnapshotResult) {
 }
 
 export function formatConsoleEntry(entry: ConsoleEntry) {
-	const where = entry.url ? ` ${entry.url}${entry.lineNumber ? `:${entry.lineNumber}` : ""}` : "";
+	const where = entry.url
+		? ` ${entry.url}${entry.lineNumber !== undefined ? `:${entry.lineNumber}` : ""}`
+		: "";
 	const stack = entry.stack ? `\n${entry.stack}` : "";
 	return `[${entry.level}] ${entry.text}${where}${stack}`;
 }

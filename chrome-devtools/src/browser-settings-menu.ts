@@ -2,6 +2,8 @@ import { isAbsolute } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { defineMenu, runMenu } from "@narumitw/pi-tui-kit";
 import { shutdownManagedBrowser, syncManagedBrowserSettings } from "./browser-manager.js";
+import { setActivePageId } from "./cdp-client.js";
+import { closeSessions } from "./cdp-session.js";
 import {
 	applyAvailableChromeDevtoolsTools,
 	configuredChromeDevtoolsTools,
@@ -10,6 +12,8 @@ import {
 import {
 	applyRuntimeBrowserSettings,
 	applyRuntimeWebMcpSetting,
+	extensionSessionGeneration,
+	extensionSessionSignal,
 	invalidateWebMcpOperations,
 	state,
 	webMcpEnabled,
@@ -44,11 +48,11 @@ type CommandContext = ExtensionCommandContext;
 export async function showChromeDevtoolsBrowserSettings(
 	pi: ExtensionAPI,
 	ctx: CommandContext,
-	generation: number,
+	generation = extensionSessionGeneration(pi),
 ): Promise<{ closeParent: boolean }> {
 	setChromeDevtoolsSessionOwner(pi, ctx.sessionManager);
-	const ownerSignal = state.sessionController.signal;
-	const isCurrent = () => generation === state.sessionGeneration && !ownerSignal.aborted;
+	const ownerSignal = extensionSessionSignal(pi);
+	const isCurrent = () => generation === extensionSessionGeneration(pi) && !ownerSignal.aborted;
 	const projectTrusted = ctx.isProjectTrusted();
 	const menu = defineMenu<BrowserSettingsMenuState, BrowserSettingsScreen, BrowserSettingsAction>({
 		start: "settings",
@@ -73,7 +77,7 @@ export async function showChromeDevtoolsBrowserSettings(
 							id: "auto-launch",
 							label: "Auto-launch",
 							description:
-								"Launch an isolated managed browser when a local endpoint is unavailable.",
+								"On launches a temporary managed browser when the local endpoint is down. Off attaches to an external browser. A configured profile stays persistent and managed by Pi.",
 							currentValue: browser.autoLaunchEnabled ? "On" : "Off",
 							values: ["On", "Off"],
 							action: "set-auto-launch",
@@ -151,14 +155,9 @@ export async function showChromeDevtoolsBrowserSettings(
 					notifySaveFailure(ctx, error);
 					return { kind: "rejected" };
 				}
-				const saved = await saveAndApplyBrowserPatch(
-					ctx,
-					generation,
-					ownerSignal,
-					signal,
-					projectTrusted,
-					{ endpoint },
-				);
+				const saved = await saveAndApplyBrowserPatch(ctx, ownerSignal, signal, projectTrusted, {
+					endpoint,
+				});
 				if (!saved) return { kind: "rejected" };
 				notifyEffectiveSave(
 					ctx,
@@ -170,14 +169,9 @@ export async function showChromeDevtoolsBrowserSettings(
 			},
 			"set-auto-launch": async ({ value, signal }) => {
 				if (value !== "On" && value !== "Off") return { kind: "rejected" };
-				const saved = await saveAndApplyBrowserPatch(
-					ctx,
-					generation,
-					ownerSignal,
-					signal,
-					projectTrusted,
-					{ autoLaunch: value === "On" },
-				);
+				const saved = await saveAndApplyBrowserPatch(ctx, ownerSignal, signal, projectTrusted, {
+					autoLaunch: value === "On",
+				});
 				if (!saved) return { kind: "rejected" };
 				notifyEffectiveSave(
 					ctx,
@@ -192,7 +186,6 @@ export async function showChromeDevtoolsBrowserSettings(
 				const saved = await saveAndApplyWebMcpSetting(
 					pi,
 					ctx,
-					generation,
 					ownerSignal,
 					signal,
 					projectTrusted,
@@ -217,14 +210,9 @@ export async function showChromeDevtoolsBrowserSettings(
 					return { kind: "rejected" };
 				}
 				const executablePath = reset ? null : trimmed;
-				const saved = await saveAndApplyBrowserPatch(
-					ctx,
-					generation,
-					ownerSignal,
-					signal,
-					projectTrusted,
-					{ executablePath },
-				);
+				const saved = await saveAndApplyBrowserPatch(ctx, ownerSignal, signal, projectTrusted, {
+					executablePath,
+				});
 				if (!saved) return { kind: "rejected" };
 				notifyEffectiveSave(
 					ctx,
@@ -259,7 +247,6 @@ export async function showChromeDevtoolsBrowserSettings(
 
 async function saveAndApplyBrowserPatch(
 	ctx: CommandContext,
-	generation: number,
 	ownerSignal: AbortSignal,
 	actionSignal: AbortSignal,
 	projectTrusted: boolean,
@@ -267,20 +254,22 @@ async function saveAndApplyBrowserPatch(
 ) {
 	try {
 		await ctx.waitForIdle();
-		if (!isCurrent(generation, ownerSignal, actionSignal)) return false;
+		if (!isCurrent(ownerSignal, actionSignal)) return false;
 		await saveBrowserSettings(patch);
-		if (!isCurrent(generation, ownerSignal, actionSignal)) return false;
+		if (!isCurrent(ownerSignal, actionSignal)) return false;
 		invalidateWebMcpOperations(ctx.sessionManager, "Chrome DevTools browser configuration changed");
+		closeSessions(ctx.sessionManager, new Error("Chrome DevTools browser configuration changed"));
+		setActivePageId(ctx.sessionManager, undefined);
 		await shutdownManagedBrowser(undefined, { owner: ctx.sessionManager });
-		if (!isCurrent(generation, ownerSignal, actionSignal)) return false;
+		if (!isCurrent(ownerSignal, actionSignal)) return false;
 		const loaded = await loadSettings({ cwd: ctx.cwd, projectTrusted });
-		if (!isCurrent(generation, ownerSignal, actionSignal)) return false;
+		if (!isCurrent(ownerSignal, actionSignal)) return false;
 		applyRuntimeBrowserSettings(loaded.effectiveBrowser, loaded.paths, projectTrusted);
 		syncManagedBrowserSettings(ctx.sessionManager, loaded.effectiveBrowser);
 		state.settingsNotice = loaded.notice;
 		return loaded;
 	} catch (error) {
-		if (isCurrent(generation, ownerSignal, actionSignal)) notifySaveFailure(ctx, error);
+		if (isCurrent(ownerSignal, actionSignal)) notifySaveFailure(ctx, error);
 		return false;
 	}
 }
@@ -288,7 +277,6 @@ async function saveAndApplyBrowserPatch(
 async function saveAndApplyWebMcpSetting(
 	pi: ExtensionAPI,
 	ctx: CommandContext,
-	generation: number,
 	ownerSignal: AbortSignal,
 	actionSignal: AbortSignal,
 	projectTrusted: boolean,
@@ -298,17 +286,17 @@ async function saveAndApplyWebMcpSetting(
 	const previousTools = configuredChromeDevtoolsTools(pi);
 	try {
 		await ctx.waitForIdle();
-		if (!isCurrent(generation, ownerSignal, actionSignal)) return false;
+		if (!isCurrent(ownerSignal, actionSignal)) return false;
 		applyRuntimeWebMcpSetting(enabled, ctx.sessionManager);
 		applyAvailableChromeDevtoolsTools(pi, previousTools);
 		await saveWebMcpSettings(enabled);
-		if (!isOwnerCurrent(generation, ownerSignal)) return false;
+		if (ownerSignal.aborted) return false;
 		const loaded = await loadSettings({ cwd: ctx.cwd, projectTrusted });
-		if (!isOwnerCurrent(generation, ownerSignal)) return false;
+		if (ownerSignal.aborted) return false;
 		state.settingsNotice = loaded.notice;
 		return loaded;
 	} catch (error) {
-		if (!isOwnerCurrent(generation, ownerSignal)) return false;
+		if (ownerSignal.aborted) return false;
 		let rollbackError: unknown;
 		try {
 			applyRuntimeWebMcpSetting(previousEnabled, ctx.sessionManager);
@@ -316,7 +304,7 @@ async function saveAndApplyWebMcpSetting(
 		} catch (caught) {
 			rollbackError = caught;
 		}
-		if (isCurrent(generation, ownerSignal, actionSignal)) {
+		if (isCurrent(ownerSignal, actionSignal)) {
 			notifySaveFailure(
 				ctx,
 				rollbackError
@@ -330,12 +318,8 @@ async function saveAndApplyWebMcpSetting(
 	}
 }
 
-function isOwnerCurrent(generation: number, ownerSignal: AbortSignal) {
-	return generation === state.sessionGeneration && !ownerSignal.aborted;
-}
-
-function isCurrent(generation: number, ownerSignal: AbortSignal, actionSignal: AbortSignal) {
-	return isOwnerCurrent(generation, ownerSignal) && !actionSignal.aborted;
+function isCurrent(ownerSignal: AbortSignal, actionSignal: AbortSignal) {
+	return !ownerSignal.aborted && !actionSignal.aborted;
 }
 
 function invalidSettingsScreen(load: SettingsLoadResult) {

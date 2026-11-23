@@ -378,6 +378,9 @@ test("managed browsers and shutdown stay scoped to each session manager", async 
 		endpointSource: "user",
 		autoLaunchSource: "user",
 		executablePathSource: "user",
+		userDataDirSource: "default",
+		keepAliveEnabled: false,
+		keepAliveSource: "default",
 		extensionPathsSource: "project",
 	} satisfies EffectiveBrowserSettings;
 	const secondSettings = {
@@ -392,6 +395,9 @@ test("managed browsers and shutdown stay scoped to each session manager", async 
 		endpointSource: "environment",
 		autoLaunchSource: "environment",
 		executablePathSource: "environment",
+		userDataDirSource: "default",
+		keepAliveEnabled: false,
+		keepAliveSource: "default",
 		extensionPathsSource: "user",
 	} satisfies EffectiveBrowserSettings;
 	syncManagedBrowserSettings(firstOwner, firstSettings);
@@ -764,6 +770,166 @@ test("keepAlive refuses to launch when its pinned port is already taken", async 
 	try {
 		await assert.rejects(ensureDevToolsEndpoint(), /already in use/);
 		assert.deepEqual(calls.spawn, [], "a doomed launch should not spawn anything");
+	} finally {
+		restore();
+	}
+});
+
+test("cancelling an endpoint probe does not launch and does not reject in the background", async () => {
+	resetRuntime({
+		extensionPaths: [],
+		extensionPathsSource: "default",
+		autoLaunchEnabled: true,
+		browserExecutable: "/test/chrome-for-testing",
+	});
+	const caller = new AbortController();
+	let releaseProbe: ((response: Response) => void) | undefined;
+	let markProbe: (() => void) | undefined;
+	const probeStarted = new Promise<void>((resolve) => {
+		markProbe = resolve;
+	});
+	let spawns = 0;
+	const unhandled: unknown[] = [];
+	const onUnhandled = (error: unknown) => {
+		unhandled.push(error);
+	};
+	process.on("unhandledRejection", onUnhandled);
+	const restore = setBrowserManagerOperationsForTests({
+		fetch: async (input) => {
+			if (String(input).endsWith("/json/version")) {
+				markProbe?.();
+				return new Promise<Response>((resolve) => {
+					releaseProbe = resolve;
+				});
+			}
+			return new Response("[]", { status: 200 });
+		},
+		spawn: () => {
+			spawns += 1;
+			return new FakeChildProcess() as unknown as ChildProcess;
+		},
+	});
+	try {
+		const pending = ensureDevToolsEndpoint(1_000, caller.signal);
+		await probeStarted;
+		caller.abort(new DOMException("stop the probe", "AbortError"));
+		releaseProbe?.(new Response("busy", { status: 500, statusText: "Busy" }));
+		await assert.rejects(pending, /stop the probe/);
+		assert.equal(spawns, 0);
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		assert.deepEqual(unhandled, []);
+	} finally {
+		process.off("unhandledRejection", onUnhandled);
+		restore();
+	}
+});
+
+test("one caller can cancel a shared launch without stopping the other", async () => {
+	resetRuntime({
+		extensionPaths: [],
+		extensionPathsSource: "default",
+		autoLaunchEnabled: true,
+		browserExecutable: "/test/chrome-for-testing",
+		portConfigured: false,
+		keepAliveEnabled: false,
+	});
+	let releaseProfile: (() => void) | undefined;
+	let markProfile: (() => void) | undefined;
+	const profileStarted = new Promise<void>((resolve) => {
+		markProfile = resolve;
+	});
+	let fetches = 0;
+	let spawns = 0;
+	const restore = setBrowserManagerOperationsForTests({
+		access: async () => undefined,
+		inspectBrowserVersion: async () => "Chromium 149.0.0.0",
+		isPortAvailable: async () => true,
+		mkdtemp: async () => {
+			markProfile?.();
+			await new Promise<void>((resolve) => {
+				releaseProfile = resolve;
+			});
+			return "/tmp/shared-launch-profile";
+		},
+		readFile: async () => "9333\n/devtools/browser/test\n",
+		rm: async () => undefined,
+		fetch: async () => {
+			fetches += 1;
+			if (fetches <= 2) return new Response("missing", { status: 404, statusText: "Not Found" });
+			return new Response(JSON.stringify({ Browser: "Chrome/149" }), { status: 200 });
+		},
+		spawn: () => {
+			spawns += 1;
+			const child = new FakeChildProcess();
+			queueMicrotask(() => child.emit("spawn"));
+			return child as unknown as ChildProcess;
+		},
+	});
+	const firstCaller = new AbortController();
+	try {
+		const first = ensureDevToolsEndpoint(1_000, firstCaller.signal);
+		const second = ensureDevToolsEndpoint(1_000);
+		await profileStarted;
+		firstCaller.abort(new DOMException("leave the launch", "AbortError"));
+		releaseProfile?.();
+		await assert.rejects(first, /leave the launch/);
+		await second;
+		assert.equal(spawns, 1);
+	} finally {
+		restore();
+	}
+});
+
+test("keepAlive reaps a browser that never became ready and keeps the user profile", async () => {
+	resetRuntime({
+		browserUserDataDir: "/profiles/pi-chrome",
+		browserUserDataDirSource: "user",
+		keepAliveEnabled: true,
+		keepAliveSource: "user",
+	});
+	const { child, calls, restore } = successfulOperations({
+		fetch: async () => new Response("missing", { status: 404, statusText: "Not Found" }),
+	});
+	try {
+		await assert.rejects(ensureDevToolsEndpoint(), /404/);
+		assert.ok(child.killCalls.length > 0, "an unready kept-alive browser must be stopped");
+		assert.ok(!calls.rm.includes("/profiles/pi-chrome"), "the user profile must survive");
+	} finally {
+		restore();
+	}
+});
+
+test("a temporary browser that never becomes ready is stopped and its directory removed", async () => {
+	resetRuntime({
+		browserUserDataDir: undefined,
+		keepAliveEnabled: false,
+	});
+	const { child, calls, restore } = successfulOperations({
+		fetch: async () => new Response("missing", { status: 404, statusText: "Not Found" }),
+	});
+	try {
+		await assert.rejects(ensureDevToolsEndpoint(), /404/);
+		assert.ok(child.killCalls.length > 0);
+		assert.ok(calls.rm.includes("/tmp/test-managed-profile"));
+	} finally {
+		restore();
+	}
+});
+
+test("an already reachable endpoint is an external browser and shutdown does not spawn or kill", async () => {
+	resetRuntime({
+		extensionPaths: [],
+		extensionPathsSource: "default",
+		autoLaunchEnabled: true,
+		browserUserDataDir: undefined,
+		keepAliveEnabled: false,
+	});
+	const { calls, restore } = successfulOperations();
+	try {
+		await ensureDevToolsEndpoint();
+		await shutdownManagedBrowser();
+		assert.deepEqual(calls.spawn, []);
+		assert.deepEqual(calls.mkdtemp, []);
 	} finally {
 		restore();
 	}

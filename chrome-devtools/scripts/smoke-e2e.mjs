@@ -54,7 +54,7 @@ function cleanup() {
 	try {
 		server.close();
 	} catch {}
-	rmSync(profile, { recursive: true, force: true });
+	rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }
 // A crash or an interrupt must not leave a headless Chrome and its profile behind.
 process.on("exit", cleanup);
@@ -338,7 +338,7 @@ try {
 
 	// --- raw CDP escape hatch ---
 	await session.send("Debugger.enable");
-	await session.ensureDomains(["Debugger"]);
+	session.markDomainEnabled("Debugger");
 	check(
 		"raw CDP can enable a domain the tools do not wrap",
 		session.enabledDomains.includes("Debugger"),
