@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { stripVTControlCharacters } from "node:util";
 import {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
@@ -8,6 +7,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
 import { Check } from "typebox/value";
+import { sanitizeChromeDevtoolsDisplay } from "../tool-selector.js";
 import type { WebMcpProtocolAnnotation, WebMcpProtocolTool } from "./protocol.js";
 
 export const MAX_WEBMCP_TOOLS = 100;
@@ -215,13 +215,23 @@ export function boundedWebMcpJson(value: unknown) {
 export function webMcpConfirmationMessage(
 	tool: WebMcpToolDescriptor,
 	input: Record<string, unknown>,
-	managedProfile: boolean,
+	managedProfile: boolean | "temporary-managed" | "persistent-managed" | "external-attached",
 ) {
+	const custody =
+		managedProfile === true || managedProfile === "temporary-managed"
+			? "temporary-managed"
+			: managedProfile === "persistent-managed"
+				? "persistent-managed"
+				: "external-attached";
 	const inputSummary = sanitizeWebMcpDisplay(JSON.stringify(input, null, 2), 2_000);
+	const custodyLine =
+		custody === "temporary-managed"
+			? "This call uses the temporary managed browser profile owned by Pi."
+			: custody === "persistent-managed"
+				? "Warning: this call uses a persistent managed browser profile that may contain signed-in sessions and sensitive state."
+				: "Warning: this call uses an external attached browser that may contain everyday authenticated sessions and sensitive state.";
 	return [
-		managedProfile
-			? "This call uses the isolated browser profile managed by Pi."
-			: "Warning: this call uses an attached browser profile that may contain everyday authenticated sessions and sensitive state.",
+		custodyLine,
 		`Page: ${sanitizeWebMcpDisplay(tool.pageUrl, 4_096)}`,
 		`Frame origin: ${sanitizeWebMcpDisplay(tool.frameOrigin, 2_048)}`,
 		`Tool: ${sanitizeWebMcpDisplay(tool.name, 512)}`,
@@ -232,20 +242,7 @@ export function webMcpConfirmationMessage(
 }
 
 export function sanitizeWebMcpDisplay(value: string, maxCharacters = 50_000) {
-	const withoutBidi = stripVTControlCharacters(value).replace(
-		/[\u202a-\u202e\u2066-\u2069]/gu,
-		"�",
-	);
-	const sanitized = Array.from(withoutBidi, (character) => {
-		const codePoint = character.codePointAt(0) ?? 0;
-		const unsafeControl =
-			(codePoint >= 0 && codePoint <= 8) ||
-			(codePoint >= 11 && codePoint <= 31) ||
-			(codePoint >= 127 && codePoint <= 159);
-		return unsafeControl ? "�" : character;
-	}).join("");
-	if (sanitized.length <= maxCharacters) return sanitized;
-	return `${sanitized.slice(0, Math.max(0, maxCharacters - 1))}…`;
+	return sanitizeChromeDevtoolsDisplay(value, maxCharacters);
 }
 
 export function webMcpErrorMessage(error: unknown) {

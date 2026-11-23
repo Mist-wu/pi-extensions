@@ -4,13 +4,14 @@ import type { CdpWebSocketConstructor } from "../src/cdp-client.js";
 import {
 	acquireSession,
 	closeAllSessions,
+	closeSessions,
 	NETWORK_BUFFER_CAPACITY,
 	type PageSession,
 	peekSession,
 	sessionPoolStatus,
 	withSession,
 } from "../src/cdp-session.js";
-import type { DevToolsPage } from "../src/runtime.js";
+import { beginPageOperation, type DevToolsPage } from "../src/runtime.js";
 
 const PAGE: DevToolsPage = {
 	id: "page-1",
@@ -308,7 +309,7 @@ test("withSession refreshes the idle clock and reports pool status", async () =>
 		first.lastUsedAt = 0;
 
 		const seen: PageSession[] = [];
-		await withSession(PAGE, owner, async (session) => {
+		await withSession(PAGE, beginPageOperation(owner), async (session) => {
 			seen.push(session);
 		});
 
@@ -334,4 +335,137 @@ test("a page without a debugger URL is rejected before any connection attempt", 
 		/has no webSocketDebuggerUrl/,
 	);
 	assert.equal(wire.sockets.length, 0);
+});
+
+class GatedSocket extends EventTarget {
+	static sockets: GatedSocket[] = [];
+	closeCalls = 0;
+	readonly sent: string[] = [];
+	private openGate: () => void = () => {};
+
+	constructor(readonly url: string | URL) {
+		super();
+		GatedSocket.sockets.push(this);
+		this.openGate = () => this.dispatchEvent(new Event("open"));
+	}
+
+	release() {
+		this.openGate();
+	}
+
+	close() {
+		this.closeCalls += 1;
+	}
+
+	send(payload: string) {
+		this.sent.push(payload);
+		const request = JSON.parse(payload) as { id: number };
+		queueMicrotask(() =>
+			this.dispatchEvent(
+				new MessageEvent("message", { data: JSON.stringify({ id: request.id, result: {} }) }),
+			),
+		);
+	}
+}
+
+function gatedTransport() {
+	GatedSocket.sockets = [];
+	return {
+		get sockets() {
+			return GatedSocket.sockets;
+		},
+		webSocketConstructor: GatedSocket as unknown as CdpWebSocketConstructor,
+	};
+}
+
+test("two callers of the same debugger address share one handshake", async () => {
+	const owner = {};
+	const wire = gatedTransport();
+	try {
+		const first = acquireSession(PAGE, owner, { webSocketConstructor: wire.webSocketConstructor });
+		const second = acquireSession(PAGE, owner, { webSocketConstructor: wire.webSocketConstructor });
+		assert.equal(wire.sockets.length, 1);
+		wire.sockets[0]?.release();
+		const [left, right] = await Promise.all([first, second]);
+		assert.equal(left, right);
+		assert.equal(wire.sockets.length, 1);
+	} finally {
+		closeAllSessions();
+	}
+});
+
+test("a slower handshake for a replaced debugger url closes only itself", async () => {
+	const owner = {};
+	const wire = gatedTransport();
+	const options = { webSocketConstructor: wire.webSocketConstructor };
+	const previous = {
+		...PAGE,
+		webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/old",
+	};
+	const next = {
+		...PAGE,
+		webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/new",
+	};
+	try {
+		const older = acquireSession(previous, owner, options);
+		const newer = acquireSession(next, owner, options);
+		const oldSocket = wire.sockets.find((socket) => String(socket.url).endsWith("/old"));
+		const newSocket = wire.sockets.find((socket) => String(socket.url).endsWith("/new"));
+		assert.ok(oldSocket);
+		assert.ok(newSocket);
+		newSocket.release();
+		const session = await newer;
+		oldSocket.release();
+		await assert.rejects(older, /page session closed/);
+		assert.equal(peekSession(next, owner), session);
+		assert.equal(session.alive, true);
+		assert.equal(newSocket.closeCalls, 0);
+		assert.ok(oldSocket.closeCalls >= 1);
+	} finally {
+		closeAllSessions();
+	}
+});
+
+test("cancelling one waiter leaves the shared handshake usable", async () => {
+	const owner = {};
+	const wire = gatedTransport();
+	const caller = new AbortController();
+	try {
+		const cancelled = acquireSession(PAGE, owner, {
+			signal: caller.signal,
+			webSocketConstructor: wire.webSocketConstructor,
+		});
+		caller.abort(new DOMException("stop this waiter", "AbortError"));
+		await assert.rejects(cancelled, (error: unknown) => {
+			assert.ok(error instanceof DOMException);
+			assert.equal(error.name, "AbortError");
+			assert.equal(error.message, "stop this waiter");
+			return true;
+		});
+		wire.sockets[0]?.release();
+		const session = await acquireSession(PAGE, owner, {
+			webSocketConstructor: wire.webSocketConstructor,
+		});
+		assert.equal(session.alive, true);
+		assert.equal(wire.sockets.length, 1);
+	} finally {
+		closeAllSessions();
+	}
+});
+
+test("owner shutdown discards an in-flight handshake", async () => {
+	const owner = {};
+	const wire = gatedTransport();
+	try {
+		const pending = acquireSession(PAGE, owner, {
+			webSocketConstructor: wire.webSocketConstructor,
+		});
+		closeSessions(owner, new Error("owner shut down"));
+		wire.sockets[0]?.release();
+		await assert.rejects(pending);
+		assert.equal(peekSession(PAGE, owner), undefined);
+		assert.ok((wire.sockets[0]?.closeCalls ?? 0) >= 1);
+	} finally {
+		closeAllSessions();
+	}
 });

@@ -62,6 +62,12 @@ def request_bytes(url: str, *, referer: str = "https://www.bilibili.com/", retri
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=60) as response:
                 return response.read()
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            if exc.code not in (429, 500, 502, 503, 504):
+                break
+            if attempt + 1 < retries:
+                time.sleep(2 ** attempt)
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             last_error = exc
             if attempt + 1 < retries:
@@ -136,17 +142,19 @@ def save_official_subtitle(subtitle: dict[str, Any], prefix: Path) -> tuple[Path
 
     lines: list[str] = []
     srt: list[str] = []
-    for index, item in enumerate(body, 1):
+    for item in body:
         content = html.unescape(str(item.get("content", ""))).strip()
         if not content:
             continue
         lines.append(content)
         srt.extend([
-            str(index),
+            str(len(lines)),
             f"{timestamp(float(item.get('from', 0)))} --> {timestamp(float(item.get('to', 0)))}",
             content,
             "",
         ])
+    if not lines:
+        raise RuntimeError("官方字幕正文为空")
     txt_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     srt_path.write_text("\n".join(srt), encoding="utf-8")
     return txt_path, srt_path
@@ -204,11 +212,17 @@ def save_audio(bvid: str, cid: int, page: dict[str, Any], page_number: int, pref
             raise RuntimeError(
                 f"音频时长不完整：下载 {actual_duration:.1f}s，页面标注 {expected_duration:.1f}s"
             )
-        subprocess.run(
-            [require_binary("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y", "-i", str(raw_audio),
-             "-vn", "-c:a", "copy", str(audio_path)],
-            check=True,
-        )
+        staged_audio = audio_path.with_suffix(".tmp.m4a")
+        try:
+            subprocess.run(
+                [require_binary("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y", "-i", str(raw_audio),
+                 "-vn", "-c:a", "copy", str(staged_audio)],
+                check=True,
+            )
+            staged_audio.replace(audio_path)
+        except Exception:
+            staged_audio.unlink(missing_ok=True)
+            raise
     return audio_path, actual_duration
 
 
@@ -257,7 +271,7 @@ def run_logged(command: list[str], log_path: Path) -> None:
     log_path.unlink(missing_ok=True)
 
 
-def transcribe_mlx(wav: Path, prefix: Path, language: str) -> None:
+def transcribe_mlx(wav: Path, prefix: Path, language: str, log_path: Path) -> None:
     command = [
         require_binary("uvx"), "--from", "mlx-whisper", "mlx_whisper", str(wav),
         "--model", MLX_MODEL,
@@ -269,10 +283,10 @@ def transcribe_mlx(wav: Path, prefix: Path, language: str) -> None:
     ]
     if language != "auto":
         command.extend(["--language", language])
-    run_logged(command, prefix.with_suffix(".transcribe.log"))
+    run_logged(command, log_path)
 
 
-def transcribe_whisper_cpp(wav: Path, prefix: Path, language: str) -> None:
+def transcribe_whisper_cpp(wav: Path, prefix: Path, language: str, log_path: Path) -> None:
     require_binary("whisper-cli")
     if not WHISPER_CPP_MODEL.exists():
         raise RuntimeError(f"本地 whisper.cpp 模型不存在：{WHISPER_CPP_MODEL}")
@@ -280,28 +294,119 @@ def transcribe_whisper_cpp(wav: Path, prefix: Path, language: str) -> None:
         "whisper-cli", "-m", str(WHISPER_CPP_MODEL), "-f", str(wav),
         "-l", language, "-otxt", "-osrt", "-ovtt", "-oj", "-of", str(prefix), "-np",
     ]
-    run_logged(command, prefix.with_suffix(".transcribe.log"))
+    run_logged(command, log_path)
+
+
+TRANSCRIPT_SUFFIXES = (".txt", ".srt", ".vtt", ".json", ".tsv")
+
+
+def replace_file(source: Path, target: Path) -> None:
+    """Same-filesystem replace. Tests monkeypatch this to simulate an interrupted publish."""
+    os.replace(source, target)
+
+
+def _journal_path(prefix: Path) -> Path:
+    return prefix.parent / f".{prefix.name}.bvsum-publish.json"
+
+
+def _backup_dir(prefix: Path) -> Path:
+    return prefix.parent / f".{prefix.name}.bvsum-backup"
+
+
+def _write_journal(path: Path, payload: dict[str, Any]) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def recover_transcript_publish(prefix: Path) -> None:
+    """Finish or roll back an interrupted publish, even if an earlier rollback was interrupted."""
+    journal_path = _journal_path(prefix)
+    try:
+        journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return
+    phase = journal["phase"]
+    if phase not in ("staged", "backed-up", "installing", "installed"):
+        raise ValueError(f"无法识别字稿恢复日志：{journal_path}")
+    backup = _backup_dir(prefix)
+    if phase != "installed":
+        for suffix in TRANSCRIPT_SUFFIXES:
+            source = backup / f"file{suffix}"
+            target = prefix.with_suffix(suffix)
+            if source.exists():
+                replace_file(source, target)
+            elif phase != "staged" and suffix not in journal["backedUp"]:
+                # This format had no previous file. Remove a partially installed replacement.
+                target.unlink(missing_ok=True)
+    shutil.rmtree(backup, ignore_errors=True)
+    journal_path.unlink()
 
 
 def existing_transcript(prefix: Path) -> Path | None:
+    recover_transcript_publish(prefix)
     txt = prefix.with_suffix(".txt")
     return txt if txt.exists() and txt.stat().st_size > 0 else None
 
 
-def transcribe(wav: Path, prefix: Path, language: str, backend_request: str) -> str:
+def publish_transcript(prefix: Path, staged_prefix: Path) -> dict[str, Path]:
+    """Install one backend's files from the destination filesystem, or restore the previous set."""
+    recover_transcript_publish(prefix)
+    produced = {
+        suffix: staged_prefix.with_suffix(suffix)
+        for suffix in TRANSCRIPT_SUFFIXES
+        if staged_prefix.with_suffix(suffix).exists() and staged_prefix.with_suffix(suffix).stat().st_size > 0
+    }
+    txt = produced.get(".txt")
+    if txt is None:
+        raise RuntimeError("转录进程结束但未生成 TXT")
+    journal_path = _journal_path(prefix)
+    backup = _backup_dir(prefix)
+    if backup.exists():
+        shutil.rmtree(backup)
+    backup.mkdir(parents=True)
+    backed_up = [suffix for suffix in TRANSCRIPT_SUFFIXES if prefix.with_suffix(suffix).exists()]
+    _write_journal(journal_path, {"phase": "staged", "movedToBackup": backed_up})
+    for suffix in backed_up:
+        replace_file(prefix.with_suffix(suffix), backup / f"file{suffix}")
+    _write_journal(journal_path, {"phase": "backed-up", "backedUp": backed_up})
+    for suffix, source in produced.items():
+        replace_file(source, prefix.with_suffix(suffix))
+    _write_journal(journal_path, {"phase": "installed"})
+    shutil.rmtree(backup, ignore_errors=True)
+    journal_path.unlink(missing_ok=True)
+    return {suffix: prefix.with_suffix(suffix) for suffix in produced}
+
+
+def transcribe(wav: Path, workspace: Path, prefix_name: str, language: str, backend_request: str, log_path: Path) -> tuple[str, Path]:
     backend = select_backend(backend_request)
     log(f"本地转录：backend={backend}, language={language}")
+
+    def run_backend(name: str, runner) -> Path:
+        backend_dir = workspace / name
+        if backend_dir.exists():
+            shutil.rmtree(backend_dir)
+        backend_dir.mkdir(parents=True)
+        staged = backend_dir / prefix_name
+        runner(staged)
+        if not (staged.with_suffix(".txt").exists() and staged.with_suffix(".txt").stat().st_size > 0):
+            raise RuntimeError("转录进程结束但未生成 TXT")
+        return staged
+
     try:
         if backend == "mlx":
-            transcribe_mlx(wav, prefix, language)
+            staged = run_backend("mlx", lambda staged_prefix: transcribe_mlx(wav, staged_prefix, language, log_path))
         else:
-            transcribe_whisper_cpp(wav, prefix, language)
-        return backend
+            staged = run_backend("whisper-cpp", lambda staged_prefix: transcribe_whisper_cpp(wav, staged_prefix, language, log_path))
+        return backend, staged
     except Exception as first_error:
         if backend_request == "auto" and backend == "mlx" and shutil.which("whisper-cli") and WHISPER_CPP_MODEL.exists():
             log(f"MLX 转录失败，改用 whisper-cli：{first_error}")
-            transcribe_whisper_cpp(wav, prefix, language)
-            return "whisper-cpp"
+            staged = run_backend(
+                "whisper-cpp",
+                lambda staged_prefix: transcribe_whisper_cpp(wav, staged_prefix, language, log_path),
+            )
+            return "whisper-cpp", staged
         raise
 
 
@@ -341,17 +446,18 @@ def main() -> int:
             info = fetch_info(bvid)
             all_pages = info.get("pages") or [{"cid": info.get("cid"), "page": 1, "part": info.get("title", "")}]
             selected = requested_page(args.input)
-            pages = [p for p in all_pages if int(p.get("page") or 1) == selected] if selected else all_pages
+            pages = [p for p in all_pages if int(p.get("page") or 1) == selected] if selected is not None else all_pages
             if not pages:
                 raise RuntimeError(f"链接指定的分P不存在：p={selected}")
 
+            pubdate_ts = info.get("pubdate")
             manifest: dict[str, Any] = {
                 "bvid": bvid,
                 "title": info.get("title", ""),
                 "owner": (info.get("owner") or {}).get("name", ""),
                 "description": info.get("desc", ""),
                 "duration_seconds": info.get("duration", 0),
-                "pubdate": time.strftime("%Y-%m-%d", time.localtime(info.get("pubdate") or 0)),
+                "pubdate": time.strftime("%Y-%m-%d", time.localtime(pubdate_ts)) if pubdate_ts else None,
                 "url": f"https://www.bilibili.com/video/{bvid}/",
                 "selected_page": selected,
                 "pages": [],
@@ -427,20 +533,26 @@ def main() -> int:
                 audio_path, duration = save_audio(bvid, cid, page, page_number, prefix)
                 page_result["audio_path"] = str(audio_path)
                 page_result["audio_duration_seconds"] = round(duration, 3)
-                with tempfile.TemporaryDirectory(prefix=f"bvsum-{bvid}-p{page_number}-") as temp:
-                    wav_audio = Path(temp) / "audio.wav"
+                with tempfile.TemporaryDirectory(prefix=f".{prefix.name}.bvsum-work-", dir=output_dir) as work_dir:
+                    workspace = Path(work_dir)
+                    wav_audio = workspace / "audio.wav"
                     convert_to_wav(audio_path, wav_audio)
-                    used_backend = transcribe(wav_audio, prefix, args.language, args.backend)
+                    used_backend, staged_prefix = transcribe(
+                        wav_audio,
+                        workspace,
+                        prefix.name,
+                        args.language,
+                        args.backend,
+                        prefix.with_suffix(".transcribe.log"),
+                    )
+                    published = publish_transcript(prefix, staged_prefix)
 
-                transcript_path = existing_transcript(prefix)
-                if not transcript_path:
-                    raise RuntimeError("转录进程结束但未生成 TXT")
                 page_result.update({
                     "source": "machine-transcript",
                     "backend": used_backend,
                     "language": args.language,
-                    "transcript_path": str(transcript_path),
-                    "srt_path": str(prefix.with_suffix('.srt')) if prefix.with_suffix('.srt').exists() else None,
+                    "transcript_path": str(published[".txt"]),
+                    "srt_path": str(published[".srt"]) if ".srt" in published else None,
                 })
                 manifest["pages"].append(page_result)
                 manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

@@ -2,15 +2,15 @@
 
 [Back to README](../README.md)
 
-- [Browser connection](#-browser-setup)
+- [Browser connection](#browser-setup)
 - [Unpacked extensions](#unpacked-extensions)
 - [Experimental WebMCP](#experimental-webmcp)
 - [Deprecated overrides and manual endpoints](#deprecated-environment-overrides-and-manual-endpoints)
 
-## 🌐 Browser setup
+## Browser setup
 
 Without unpacked extensions, the extension first tries `browser.endpoint`, defaulting to `http://127.0.0.1:9222`.
-If that endpoint is unavailable and `browser.autoLaunch` is `true`, it lazily launches an extension-owned browser with an isolated temporary profile and retries the CDP request.
+If that endpoint is unavailable and `browser.autoLaunch` is `true`, it lazily launches an extension-owned browser with an isolated temporary profile (or `browser.userDataDir` if configured) and retries the CDP request.
 The extension reuses existing endpoints and never terminates them.
 
 Configure the canonical user file at `${PI_CODING_AGENT_DIR:-~/.pi/agent}/pi-chrome-devtools.json`:
@@ -20,16 +20,20 @@ Configure the canonical user file at `${PI_CODING_AGENT_DIR:-~/.pi/agent}/pi-chr
   "browser": {
     "endpoint": "http://127.0.0.1:9222",
     "autoLaunch": true,
-    "executablePath": "/absolute/path/to/chromium"
+    "executablePath": "/absolute/path/to/chromium",
+    "userDataDir": "/absolute/path/to/chrome-profile",
+    "keepAlive": false
   }
 }
 ```
 
 `browser.endpoint` must be an HTTP origin with an explicit port and no credentials, path, query, or fragment.
-Omitting it keeps attach-first behavior on `127.0.0.1:9222` and lets a managed launch use Chrome's dynamic DevTools port mode (`--remote-debugging-port=0`).
+Omitting it keeps attach-first behavior on `127.0.0.1:9222` and lets a managed launch use Chrome's dynamic DevTools port mode (`--remote-debugging-port=0`), unless `browser.keepAlive` pins the port.
 Saving an explicit endpoint pins managed launches to that port.
 `browser.autoLaunch` defaults to `true`.
 `browser.executablePath` is optional and must be an absolute path; when absent, normal browser discovery applies.
+`browser.userDataDir` is optional and must be an absolute path; when set, the managed browser reuses that profile directory and shutdown never deletes it.
+`browser.keepAlive` defaults to `false`; when `true` alongside `browser.userDataDir`, it detaches the managed browser on session shutdown and pins the debugging port to `browser.endpoint` so later sessions can attach to it. Setting `keepAlive` without `userDataDir` is ignored with a warning.
 
 The configured endpoint must expose the standard CDP HTTP discovery routes such as `/json/version` and `/json/list`.
 Chrome's newer built-in permission flow can listen on port `9222` while returning `404` from those routes; setting the same HTTP origin does not by itself make that flow compatible.
@@ -72,7 +76,7 @@ Relative paths resolve from the workspace (`ctx.cwd`):
 ```
 
 Project `extensionPaths` replace, rather than append to, the user array.
-A project file cannot override `browser.endpoint`, `browser.autoLaunch`, or `browser.executablePath`; browser connection settings remain machine-owned user configuration.
+A project file cannot override `browser.endpoint`, `browser.autoLaunch`, `browser.executablePath`, `browser.userDataDir`, or `browser.keepAlive`; browser connection settings remain machine-owned user configuration.
 Effective precedence is defaults, user settings, trusted project extension paths, then deprecated environment overrides.
 No new environment variable is required.
 

@@ -191,7 +191,7 @@ test("terminal sanitization removes ANSI, OSC, C0/C1, and bidirectional controls
 test("confirmation identifies the page, origin, tool, bounded input, and attached-profile risk", () => {
 	const tool = descriptor();
 	const attached = webMcpConfirmationMessage(tool, { token: "secret" }, false);
-	assert.match(attached, /attached browser profile.*authenticated sessions/u);
+	assert.match(attached, /external attached browser.*authenticated sessions/u);
 	assert.match(attached, /Page: https:\/\/example\.test\/app/u);
 	assert.match(attached, /Frame origin: https:\/\/example\.test/u);
 	assert.match(attached, /Tool: read_state/u);
@@ -199,7 +199,11 @@ test("confirmation identifies the page, origin, tool, bounded input, and attache
 	assert.match(attached, /annotations are untrusted/u);
 	assert.match(
 		webMcpConfirmationMessage(tool, {}, true),
-		/isolated browser profile managed by Pi/u,
+		/temporary managed browser profile owned by Pi/u,
+	);
+	assert.match(
+		webMcpConfirmationMessage(tool, {}, "persistent-managed"),
+		/persistent managed browser profile.*signed-in sessions/u,
 	);
 });
 

@@ -369,7 +369,6 @@ pi-extensions/chrome-devtools/
 ├── scripts/build-runtime.mjs          # Runtime builder
 ├── scripts/smoke-e2e.mjs              # End-to-end checks against a real Chrome
 ├── docs/                              # Reference documentation
-├── reference/webmcp/                  # Compatibility prototype, not shipped
 └── test/                              # Behavior, lifecycle, and unit coverage
 ```
 

@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "vitest";
 import {
+	browserSettingsForOwner,
 	devToolsEndpoint,
 	managedBrowserExtensionPaths,
 	setBrowserManagerOperationsForTests,
@@ -219,6 +220,43 @@ test("session replacement discards the stale continuation and applies only the l
 
 		assert.deepEqual(state.extensionPaths, [extensionB]);
 		assert.equal(state.projectSettingsFilePath, projectSettingsFilePath(cwdB));
+		assert.deepEqual(managedBrowserExtensionPaths(sessionOwner(second)), [extensionB]);
+	});
+});
+
+test("parallel extension instances each keep the browser settings they loaded", async () => {
+	await withFixture(async ({ cwdA, cwdB, extensionA, extensionB }) => {
+		writeJson(settingsFilePath(), {
+			browser: { endpoint: "http://localhost:9444", autoLaunch: false },
+		});
+		writeJson(projectSettingsFilePath(cwdA), {
+			browser: { extensionPaths: [path.relative(cwdA, extensionA)] },
+		});
+		writeJson(projectSettingsFilePath(cwdB), {
+			browser: { extensionPaths: [path.relative(cwdB, extensionB)] },
+		});
+		const firstPi = createMockPi();
+		const secondPi = createMockPi();
+		chromeDevtools(firstPi.pi);
+		chromeDevtools(secondPi.pi);
+		const first = createMockContext({ cwd: cwdA, isProjectTrusted: () => true }).ctx;
+		const second = createMockContext({ cwd: cwdB, isProjectTrusted: () => true }).ctx;
+
+		await Promise.all([
+			firstPi.events.get("session_start")?.[0]?.({}, first),
+			secondPi.events.get("session_start")?.[0]?.({}, second),
+		]);
+
+		const firstBrowser = browserSettingsForOwner(sessionOwner(first));
+		const secondBrowser = browserSettingsForOwner(sessionOwner(second));
+		assert.equal(firstBrowser.host, "localhost");
+		assert.equal(firstBrowser.port, 9444);
+		assert.equal(firstBrowser.autoLaunchEnabled, false);
+		assert.equal(secondBrowser.host, "localhost");
+		assert.equal(secondBrowser.port, 9444);
+		assert.equal(secondBrowser.autoLaunchEnabled, false);
+		assert.deepEqual(managedBrowserExtensionPaths(sessionOwner(first)), [extensionA]);
+		assert.deepEqual(managedBrowserExtensionPaths(sessionOwner(second)), [extensionB]);
 	});
 });
 
@@ -246,8 +284,6 @@ test("WebMCP enablement, exposure, and invalidation are scoped to the session ma
 	assert.equal(webMcpEnabled(second), false);
 	assert.ok(WEBMCP_TOOL_NAMES.every((name) => firstPi.rawPi.getActiveTools().includes(name)));
 	assert.ok(WEBMCP_TOOL_NAMES.every((name) => !secondPi.rawPi.getActiveTools().includes(name)));
-	firstOperation.dispose();
-	secondOperation.dispose();
 });
 
 test("model replacement invalidates every prior WebMCP identity and active operation", async () => {
@@ -265,7 +301,6 @@ test("model replacement invalidates every prior WebMCP identity and active opera
 		);
 		assert.equal(operation.signal.aborted, true);
 		assert.ok(currentWebMcpGeneration(owner) > generation);
-		operation.dispose();
 	});
 });
 
@@ -321,9 +356,10 @@ test("session_shutdown clears status and releases an owned browser once", async 
 		state.managedBrowser = {
 			process: child as unknown as ChildProcess,
 			userDataDir: "/tmp/lifecycle-profile",
+			persistentProfile: false,
+			keepAlive: false,
 			exited: false,
 			ready: true,
-			ownerGeneration: state.sessionGeneration,
 			sessionOwner: sessionOwner(ctx),
 		};
 		chromeDevtools(mock.pi);

@@ -70,18 +70,20 @@ interface PageOperationOptions {
 
 export async function listPages(options: PageOperationOptions = {}) {
 	const waitMs = options.waitMs ?? DEFAULT_ENDPOINT_WAIT_MS;
-	await ensureDevToolsEndpoint(waitMs, options.signal, options.sessionOwner);
+	const { signal } = options;
+	await ensureDevToolsEndpoint(waitMs, signal, options.sessionOwner);
 	return withEndpointRetry(
 		async () => {
 			const pages = await fetchDevToolsJson<DevToolsPage[]>(
 				"/json/list",
-				{ signal: options.signal },
+				{ signal },
 				options.sessionOwner,
 			);
+			signal?.throwIfAborted();
 			return pages.filter((page) => page.type === "page" && page.webSocketDebuggerUrl);
 		},
 		waitMs,
-		options.signal,
+		signal,
 	);
 }
 
@@ -94,6 +96,7 @@ export async function resolvePage(pageId?: string, options: PageOperationOptions
 	const pages = await listPages(options);
 	if (pageId) return requirePage(pageId, pages);
 
+	options.signal?.throwIfAborted();
 	const page = resolveDefaultPage(pages, options.sessionOwner);
 	if (!page) {
 		throw new Error(
@@ -115,6 +118,7 @@ export async function resolvePageForNavigation(
 	const pages = await listPages(options);
 	if (pageId) return { created: false, page: requirePage(pageId, pages) };
 
+	options.signal?.throwIfAborted();
 	const page = resolveDefaultPage(pages, options.sessionOwner);
 	if (page) return { created: false, page };
 
@@ -158,17 +162,19 @@ function requirePage(pageId: string, pages: DevToolsPage[]) {
 
 export async function createPage(url: string, options: PageOperationOptions = {}) {
 	const waitMs = options.waitMs ?? DEFAULT_ENDPOINT_WAIT_MS;
-	await ensureDevToolsEndpoint(waitMs, options.signal, options.sessionOwner);
+	const { signal } = options;
+	await ensureDevToolsEndpoint(waitMs, signal, options.sessionOwner);
 	const page = await withEndpointRetry(
 		() =>
 			fetchDevToolsJson<DevToolsPage>(
 				`/json/new?${encodeURIComponent(url)}`,
-				{ method: "PUT", signal: options.signal },
+				{ method: "PUT", signal },
 				options.sessionOwner,
 			),
 		waitMs,
-		options.signal,
+		signal,
 	);
+	signal?.throwIfAborted();
 	if (page.type !== "page" || !page.webSocketDebuggerUrl) {
 		throw new Error("Chrome DevTools created a target that is not an inspectable page.");
 	}
@@ -190,21 +196,6 @@ export function textResult<T>(text: string, details: T) {
 		content: [{ type: "text" as const, text }],
 		details,
 	};
-}
-
-export async function withCdp<T>(
-	page: DevToolsPage,
-	callback: (client: CdpClient) => Promise<T>,
-	options: CdpConnectOptions = {},
-) {
-	if (!page.webSocketDebuggerUrl) throw new Error(`Page has no webSocketDebuggerUrl: ${page.id}`);
-
-	const client = await CdpClient.connect(page.webSocketDebuggerUrl, options);
-	try {
-		return await callback(client);
-	} finally {
-		client.close();
-	}
 }
 
 export class CdpClient {

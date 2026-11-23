@@ -64,7 +64,6 @@ export interface ManagedBrowser {
 	port?: number;
 	exited: boolean;
 	ready: boolean;
-	ownerGeneration: number;
 	sessionOwner?: object;
 	cleanupPromise?: Promise<void>;
 }
@@ -80,7 +79,6 @@ export interface BrowserLaunchAttempt {
 export interface BrowserCandidateDefinition {
 	label: string;
 	executable: string;
-	source: "env" | "path" | "wellKnownPath";
 }
 
 export interface BrowserCandidate extends BrowserCandidateDefinition {
@@ -113,7 +111,6 @@ export const state: ChromeDevToolsState = {
 interface WebMcpSessionRuntime {
 	controller: AbortController;
 	enabled: boolean;
-	controllers: Set<AbortController>;
 	generation: number;
 	sessionGeneration: number;
 }
@@ -128,39 +125,25 @@ export function setWebMcpSessionOwner(owner: object) {
 
 export function beginWebMcpOperation(owner: object, toolSignal?: AbortSignal) {
 	const runtime = webMcpRuntime(owner);
-	const controller = new AbortController();
-	runtime.controllers.add(controller);
-	const signals = [controller.signal, runtime.controller.signal];
-	if (toolSignal) signals.push(toolSignal);
-	const signal = AbortSignal.any(signals);
+	const signal = runtime.controller.signal;
 	return {
-		signal,
+		signal: toolSignal ? AbortSignal.any([signal, toolSignal]) : signal,
 		owner,
 		sessionGeneration: runtime.sessionGeneration,
 		webMcpGeneration: runtime.generation,
-		dispose() {
-			runtime.controllers.delete(controller);
-		},
 	};
 }
 
 export function invalidateWebMcpOperations(owner: object, reason: string) {
 	const runtime = webMcpRuntime(owner);
 	runtime.generation += 1;
-	const controllers = [...runtime.controllers];
-	runtime.controllers.clear();
 	const error = new DOMException(reason, "AbortError");
 	runtime.controller.abort(error);
 	runtime.controller = new AbortController();
-	for (const controller of controllers) controller.abort(error);
 }
 
 export function currentWebMcpGeneration(owner: object) {
 	return webMcpRuntime(owner).generation;
-}
-
-export function webMcpSessionSignal(owner: object) {
-	return webMcpRuntime(owner).controller.signal;
 }
 
 export function applyRuntimeWebMcpSetting(enabled: boolean, owner: object) {
@@ -192,13 +175,63 @@ function webMcpRuntime(owner: object) {
 	if (existing) return existing;
 	const created: WebMcpSessionRuntime = {
 		controller: new AbortController(),
-		controllers: new Set(),
 		enabled: false,
 		generation: 0,
 		sessionGeneration: 0,
 	};
 	webMcpRuntimeByOwner.set(owner, created);
 	return created;
+}
+
+interface ExtensionSession {
+	controller: AbortController;
+	generation: number;
+}
+
+const extensionSessions = new WeakMap<object, ExtensionSession>();
+
+function extensionSession(extension: object): ExtensionSession {
+	const existing = extensionSessions.get(extension);
+	if (existing) return existing;
+	const created: ExtensionSession = { controller: new AbortController(), generation: 0 };
+	extensionSessions.set(extension, created);
+	return created;
+}
+
+/** Bump only this extension instance so a sibling instance sharing the module keeps running. */
+export function replaceExtensionSession(extension: object, reason: string): number {
+	const current = extensionSession(extension);
+	current.controller.abort(new DOMException(reason, "AbortError"));
+	current.controller = new AbortController();
+	current.generation += 1;
+	return current.generation;
+}
+
+export function extensionSessionGeneration(extension: object): number {
+	return extensionSession(extension).generation;
+}
+
+export function extensionSessionSignal(extension: object): AbortSignal {
+	return extensionSession(extension).controller.signal;
+}
+
+const pageControllers = new WeakMap<object, AbortController>();
+
+/** Capture the owner's signal before page discovery so shutdown cancels late results. */
+export function beginPageOperation(sessionOwner: object, toolSignal?: AbortSignal) {
+	let controller = pageControllers.get(sessionOwner);
+	if (!controller) {
+		controller = new AbortController();
+		pageControllers.set(sessionOwner, controller);
+	}
+	const signal = toolSignal ? AbortSignal.any([controller.signal, toolSignal]) : controller.signal;
+	return { sessionOwner, signal };
+}
+
+export function invalidatePageOperations(owner: object, reason: string) {
+	const controller = pageControllers.get(owner);
+	pageControllers.delete(owner);
+	controller?.abort(new DOMException(reason, "AbortError"));
 }
 
 export function applyRuntimeBrowserSettings(

@@ -5,9 +5,10 @@
 		"moduleResolution": "NodeNext",
 		"strict": true,
 		"noEmit": true,
+		"allowImportingTsExtensions": true,
 		"skipLibCheck": true,
 		"types": ["node"],
 		"rootDir": "."
 	},
-	"include": ["index.ts"]
+	"include": ["index.ts", "test/**/*.ts"]
 }

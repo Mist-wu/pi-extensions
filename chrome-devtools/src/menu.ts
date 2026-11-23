@@ -7,16 +7,19 @@ import {
 	launchModeLabel,
 } from "./browser-manager.js";
 import { availableChromeDevtoolsTools } from "./lazy-tools.js";
-import { state, webMcpEnabled } from "./runtime.js";
+import {
+	extensionSessionGeneration,
+	extensionSessionSignal,
+	state,
+	webMcpEnabled,
+} from "./runtime.js";
 import { loadSettings, type SettingsLoadResult } from "./settings.js";
+import { CHROME_DEVTOOLS_TOOL_NAMES, type ChromeDevToolsToolName } from "./tool-names.js";
 import {
-	CHROME_DEVTOOLS_TOOL_NAMES,
-	type ChromeDevToolsToolName,
-	CORE_CHROME_DEVTOOLS_TOOL_NAMES,
-} from "./tool-names.js";
-import {
+	allChromeDevtoolsTools,
 	buildBrowserStatusMessage,
 	buildCommandGuide,
+	orderedChromeDevtoolsTools,
 	sanitizeChromeDevtoolsDisplay,
 	setSelectedChromeDevtoolsTools,
 } from "./tool-selector.js";
@@ -117,8 +120,8 @@ export async function showChromeDevtoolsMenu(
 ) {
 	const snapshot = await loadSnapshotWithFeedback(pi, ctx, generation);
 	if (!snapshot) return;
-	const menuSignal = state.sessionController.signal;
-	const isCurrent = () => generation === state.sessionGeneration && !menuSignal.aborted;
+	const menuSignal = extensionSessionSignal(pi);
+	const isCurrent = () => generation === extensionSessionGeneration(pi) && !menuSignal.aborted;
 	const menu = defineMenu<MenuSnapshot, MainScreen, MainAction>({
 		start: "main",
 		screens: {
@@ -138,13 +141,13 @@ export async function showChromeDevtoolsMenu(
 					{
 						id: "bulk",
 						label:
-							current.activeTools.length === availableCatalogNames(ctx.sessionManager).length
+							current.activeTools.length === allChromeDevtoolsTools(ctx.sessionManager).length
 								? "Make all browser tools unavailable…"
 								: "Make all browser tools available…",
 						description:
-							current.activeTools.length === availableCatalogNames(ctx.sessionManager).length
-								? `Preview 0 of ${availableCatalogNames(ctx.sessionManager).length}; other active tools stay enabled.`
-								: `Preview ${availableCatalogNames(ctx.sessionManager).length} of ${availableCatalogNames(ctx.sessionManager).length}; other active tools stay enabled.`,
+							current.activeTools.length === allChromeDevtoolsTools(ctx.sessionManager).length
+								? `Preview 0 of ${allChromeDevtoolsTools(ctx.sessionManager).length}; other active tools stay enabled.`
+								: `Preview ${allChromeDevtoolsTools(ctx.sessionManager).length} of ${allChromeDevtoolsTools(ctx.sessionManager).length}; other active tools stay enabled.`,
 						disabled: Boolean(current.mutationBlockedReason),
 						disabledReason: current.mutationBlockedReason,
 						action: "bulk",
@@ -197,9 +200,9 @@ export async function showChromeDevtoolsMenu(
 			},
 			bulk: async ({ state: current }) => {
 				const selectedTools =
-					current.activeTools.length === availableCatalogNames(ctx.sessionManager).length
+					current.activeTools.length === allChromeDevtoolsTools(ctx.sessionManager).length
 						? []
-						: availableCatalogNames(ctx.sessionManager);
+						: allChromeDevtoolsTools(ctx.sessionManager);
 				const result = await showChromeDevtoolsToolWorkflow(pi, ctx, generation, {
 					snapshot: current,
 					initialDraft: selectedTools,
@@ -246,8 +249,8 @@ export async function showChromeDevtoolsToolWorkflow(
 > {
 	const snapshot = options.snapshot ?? (await loadSnapshotWithFeedback(pi, ctx, generation));
 	if (!snapshot) return undefined;
-	const menuSignal = state.sessionController.signal;
-	const isCurrent = () => generation === state.sessionGeneration && !menuSignal.aborted;
+	const menuSignal = extensionSessionSignal(pi);
+	const isCurrent = () => generation === extensionSessionGeneration(pi) && !menuSignal.aborted;
 	const accepted = new Set(snapshot.activeTools);
 	const workflow: ToolWorkflowState = {
 		accepted,
@@ -261,9 +264,9 @@ export async function showChromeDevtoolsToolWorkflow(
 		screens: {
 			tools: ({ state: current }) => ({
 				kind: "multiSelect",
-				title: `Browser tools (${current.draft.size}/${availableCatalogNames(ctx.sessionManager).length})`,
+				title: `Browser tools (${current.draft.size}/${allChromeDevtoolsTools(ctx.sessionManager).length})`,
 				lines: toolDraftLines(current, ctx.sessionManager),
-				items: availableCatalogNames(ctx.sessionManager).map((toolName) => ({
+				items: allChromeDevtoolsTools(ctx.sessionManager).map((toolName) => ({
 					id: toolName,
 					label: TOOL_PRESENTATION[toolName].label,
 					description: TOOL_PRESENTATION[toolName].description,
@@ -306,8 +309,8 @@ export async function showChromeDevtoolsToolWorkflow(
 				kind: "review",
 				title: "Review tool changes",
 				lines: [
-					`Currently available: ${current.accepted.size}/${availableCatalogNames(ctx.sessionManager).length}`,
-					`Proposed availability: ${current.draft.size}/${availableCatalogNames(ctx.sessionManager).length}`,
+					`Currently available: ${current.accepted.size}/${allChromeDevtoolsTools(ctx.sessionManager).length}`,
+					`Proposed availability: ${current.draft.size}/${allChromeDevtoolsTools(ctx.sessionManager).length}`,
 				],
 				content: buildToolReview(current, ctx.sessionManager),
 				format: { kind: "text" },
@@ -333,7 +336,7 @@ export async function showChromeDevtoolsToolWorkflow(
 				return { kind: "stay" };
 			},
 			selectAll: ({ state: current }) => {
-				current.draft = new Set(availableCatalogNames(ctx.sessionManager));
+				current.draft = new Set(allChromeDevtoolsTools(ctx.sessionManager));
 				return { kind: "stay" };
 			},
 			selectNone: ({ state: current }) => {
@@ -344,26 +347,30 @@ export async function showChromeDevtoolsToolWorkflow(
 			cancel: () => ({ kind: "back" }),
 			apply: async ({ state: current, signal }) => {
 				await ctx.waitForIdle();
-				if (signal.aborted || !isCurrent() || current.generation !== state.sessionGeneration) {
+				if (
+					signal.aborted ||
+					!isCurrent() ||
+					current.generation !== extensionSessionGeneration(pi)
+				) {
 					return { kind: "rejected" };
 				}
-				const selectedTools = orderedTools(current.draft);
+				const selectedTools = orderedChromeDevtoolsTools(current.draft);
 				const saveResult = await setSelectedChromeDevtoolsTools(
 					pi,
 					ctx,
 					selectedTools,
-					orderedTools(current.accepted),
+					orderedChromeDevtoolsTools(current.accepted),
 				);
 				if (!isCurrent()) return { kind: "rejected" };
 				if (saveResult === "active-tools-changed") {
-					current.accepted = new Set(activeChromeTools(pi));
+					current.accepted = new Set(availableChromeDevtoolsTools(pi));
 				}
 				if (saveResult !== "saved") return { kind: "rejected" };
 				current.accepted = new Set(selectedTools);
 				current.draft = new Set(selectedTools);
 				current.applied = true;
 				ctx.ui.notify(
-					`Saved: ${selectedTools.length} of ${availableCatalogNames(ctx.sessionManager).length} browser tools available.`,
+					`Saved: ${selectedTools.length} of ${allChromeDevtoolsTools(ctx.sessionManager).length} browser tools available.`,
 					"info",
 				);
 				return { kind: "close" };
@@ -385,20 +392,23 @@ export async function showChromeDevtoolsToolWorkflow(
 	return {
 		applied: workflow.applied,
 		closeParent: !workflow.applied && result.kind === "closed" && result.reason === "close",
-		selectedTools: orderedTools(workflow.accepted),
+		selectedTools: orderedChromeDevtoolsTools(workflow.accepted),
 	};
 }
 
 async function loadSnapshotWithFeedback(pi: ExtensionAPI, ctx: CommandContext, generation: number) {
-	const menuSignal = state.sessionController.signal;
-	const isCurrent = () => generation === state.sessionGeneration && !menuSignal.aborted;
+	const menuSignal = extensionSessionSignal(pi);
+	const isCurrent = () => generation === extensionSessionGeneration(pi) && !menuSignal.aborted;
 	const result = await runTask(ctx, {
 		label: "Loading Chrome DevTools settings…",
 		signal: menuSignal,
 		isCurrent,
 		task: async ({ signal }) => {
 			signal.throwIfAborted();
-			const settings = await loadSettings();
+			const settings = await loadSettings({
+				cwd: ctx.cwd,
+				projectTrusted: ctx.isProjectTrusted(),
+			});
 			signal.throwIfAborted();
 			return buildMenuSnapshot(pi, settings);
 		},
@@ -418,27 +428,27 @@ export async function loadChromeDevtoolsMenuSnapshot(
 }
 
 function buildMenuSnapshot(pi: ExtensionAPI, settings: SettingsLoadResult): MenuSnapshot {
-	const activeTools = activeChromeTools(pi);
+	const activeTools = availableChromeDevtoolsTools(pi);
 	const persistedTools =
 		settings.kind === "loaded" && settings.settings.tools
-			? orderedTools(new Set(settings.settings.tools))
+			? orderedChromeDevtoolsTools(new Set(settings.settings.tools))
 			: undefined;
-	const persistenceLabel =
-		settings.kind === "invalid"
-			? "settings need repair"
-			: persistedTools === undefined
-				? "not saved"
-				: arraysEqual(activeTools, persistedTools)
-					? "saved"
-					: "runtime catalog differs from saved catalog";
+	const userFileInvalid = settings.userFile.kind === "invalid";
+	const persistenceLabel = userFileInvalid
+		? "settings need repair"
+		: persistedTools === undefined
+			? "not saved"
+			: arraysEqual(activeTools, persistedTools)
+				? "saved"
+				: "runtime catalog differs from saved catalog";
 	const settingsWarning = [
 		...new Set([settings.notice, state.settingsNotice].filter(Boolean)),
 	].join("\n");
 	return {
 		activeTools,
 		persistenceLabel,
-		...(settings.kind === "invalid"
-			? { mutationBlockedReason: `Repair ${settings.reason} before saving` }
+		...(settings.userFile.kind === "invalid"
+			? { mutationBlockedReason: `Repair ${settings.userFile.reason} before saving` }
 			: {}),
 		...(settingsWarning ? { settingsWarning } : {}),
 	};
@@ -449,7 +459,7 @@ function mainStateLines(snapshot: MenuSnapshot, owner: object) {
 		line.startsWith("Last launch error:"),
 	);
 	return sanitizeLines([
-		`Tool catalog: ${snapshot.activeTools.length} of ${availableCatalogNames(owner).length} available · ${snapshot.persistenceLabel}`,
+		`Tool catalog: ${snapshot.activeTools.length} of ${allChromeDevtoolsTools(owner).length} available · ${snapshot.persistenceLabel}`,
 		`WebMCP: ${webMcpEnabled(owner) ? "enabled · experimental · confirmation required for every call" : "disabled · experimental"}`,
 		`Browser: ${browserLifecycleSummary(owner)}`,
 		`Endpoint: ${devToolsEndpoint(owner)}`,
@@ -475,7 +485,7 @@ function toolDraftLines(current: ToolWorkflowState, owner: object) {
 		return sanitizeLines([`Unavailable: ${current.mutationBlockedReason}`]);
 	const changes = symmetricDifferenceSize(current.accepted, current.draft);
 	return [
-		`Currently available: ${current.accepted.size}/${availableCatalogNames(owner).length}`,
+		`Currently available: ${current.accepted.size}/${allChromeDevtoolsTools(owner).length}`,
 		changes === 0
 			? "No unapplied changes · Escape cancels"
 			: `${changes} unapplied ${changes === 1 ? "change" : "changes"} · Escape cancels`,
@@ -485,7 +495,7 @@ function toolDraftLines(current: ToolWorkflowState, owner: object) {
 }
 
 function buildToolReview(current: ToolWorkflowState, owner: object) {
-	const catalog = availableCatalogNames(owner);
+	const catalog = allChromeDevtoolsTools(owner);
 	const available = catalog.filter((name) => current.draft.has(name));
 	const unavailable = catalog.filter((name) => !current.draft.has(name));
 	return sanitizeChromeDevtoolsDisplay(
@@ -519,14 +529,6 @@ function updateSnapshotAfterApply(
 	snapshot.persistenceLabel = "saved";
 }
 
-function activeChromeTools(pi: ExtensionAPI) {
-	return availableChromeDevtoolsTools(pi);
-}
-
-function orderedTools(tools: ReadonlySet<ChromeDevToolsToolName>) {
-	return CHROME_DEVTOOLS_TOOL_NAMES.filter((toolName) => tools.has(toolName));
-}
-
 function isChromeDevtoolsToolName(value: string): value is ChromeDevToolsToolName {
 	return CHROME_DEVTOOLS_TOOL_NAMES.includes(value as ChromeDevToolsToolName);
 }
@@ -548,12 +550,6 @@ function arraysEqual<T>(left: readonly T[], right: readonly T[]) {
 
 function sanitizeLines(lines: readonly string[]) {
 	return sanitizeChromeDevtoolsDisplay(lines.join("\n")).split("\n");
-}
-
-function availableCatalogNames(owner: object): ChromeDevToolsToolName[] {
-	return webMcpEnabled(owner)
-		? [...CHROME_DEVTOOLS_TOOL_NAMES]
-		: [...CORE_CHROME_DEVTOOLS_TOOL_NAMES];
 }
 
 function formatError(error: unknown) {

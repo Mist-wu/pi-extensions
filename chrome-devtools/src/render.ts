@@ -1,12 +1,11 @@
 import type { AgentToolResult, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 
-const STATUS_KEY = "chrome-devtools";
+export const STATUS_KEY = "chrome-devtools";
 interface StatusContext {
 	sessionManager: object;
 	ui: { setStatus: (key: string, value: string | undefined) => void };
 }
 interface RenderTheme {
-	bold(text: string): string;
 	fg(color: string, text: string): string;
 }
 const activeStatuses = new WeakMap<object, Array<{ status: string; token: symbol }>>();
@@ -73,10 +72,6 @@ class PiTextComponent implements RenderComponent {
 		this.text = text;
 		this.theme = theme;
 		this.color = color;
-	}
-
-	setText(text: string) {
-		this.text = text;
 	}
 
 	invalidate() {

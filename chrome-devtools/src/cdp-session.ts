@@ -1,13 +1,14 @@
-import { CdpClient, type CdpConnectOptions, type CdpWebSocketConstructor } from "./cdp-client.js";
-import { type DevToolsPage, state } from "./runtime.js";
+import { waitForCaller } from "./cancel-wait.js";
+import {
+	CdpClient,
+	type CdpConnectOptions,
+	type CdpWebSocketConstructor,
+	setActivePageId,
+} from "./cdp-client.js";
+import { type beginPageOperation, type DevToolsPage, invalidatePageOperations } from "./runtime.js";
 
 /**
  * Pooled, long-lived CDP sessions.
- *
- * The per-call `withCdp` helper opens a WebSocket, runs one command, and closes it again. That is
- * correct but has two costs: every tool call pays a fresh handshake plus its domain enables, and
- * every event produced between calls is lost, which makes event-driven domains (Network, Runtime,
- * Log) unusable across tool calls.
  *
  * A `PageSession` keeps one connection per page for as long as the Pi session owns it, remembers
  * which domains are already enabled, and records console and network activity into bounded ring
@@ -135,6 +136,15 @@ export class PageSession {
 		}
 	}
 
+	/** Record a domain state change performed outside `ensureDomains` (e.g. raw `cdp_send`). */
+	markDomainEnabled(domain: string) {
+		this.#enabled.add(domain);
+	}
+
+	markDomainDisabled(domain: string) {
+		this.#enabled.delete(domain);
+	}
+
 	/** Subscribe the recorders and enable the domains that feed them. */
 	async startRecording(options: { signal?: AbortSignal; timeoutMs?: number } = {}) {
 		this.#client.subscribe("Runtime.consoleAPICalled", (params) => {
@@ -179,6 +189,14 @@ export class PageSession {
 		// A redirect reuses the requestId; retire the previous hop so both are visible.
 		const previous = this.#pendingRequests.get(requestId);
 		if (previous) {
+			const redirectResponse = isRecord(params.redirectResponse)
+				? params.redirectResponse
+				: undefined;
+			if (redirectResponse) {
+				previous.status = numberOf(redirectResponse.status);
+				previous.statusText = stringOf(redirectResponse.statusText);
+				previous.mimeType = stringOf(redirectResponse.mimeType);
+			}
 			previous.finishedAt = entry.startedAt;
 			previous.durationMs = Math.max(0, previous.finishedAt - previous.startedAt);
 			this.network.push(previous);
@@ -246,25 +264,46 @@ export class PageSession {
 }
 
 interface OwnerPool {
+	controller: AbortController;
+	generation: number;
+	pending: Map<string, { url: string; promise: Promise<PageSession> }>;
 	sessions: Map<string, PageSession>;
 	idleTimer?: ReturnType<typeof setInterval>;
 }
 
+function createOwnerPool(): OwnerPool {
+	return {
+		controller: new AbortController(),
+		generation: 0,
+		pending: new Map(),
+		sessions: new Map(),
+	};
+}
+
 const pools = new WeakMap<object, OwnerPool>();
-const globalPool: OwnerPool = { sessions: new Map() };
+const globalPool: OwnerPool = createOwnerPool();
 const knownOwners = new Set<object>();
+
+function existingPoolFor(owner: object | undefined): OwnerPool | undefined {
+	return owner ? pools.get(owner) : globalPool;
+}
 
 function poolFor(owner: object | undefined): OwnerPool {
 	if (!owner) return globalPool;
 	const existing = pools.get(owner);
 	if (existing) return existing;
-	const created: OwnerPool = { sessions: new Map() };
+	const created = createOwnerPool();
 	pools.set(owner, created);
-	knownOwners.add(owner);
 	return created;
 }
 
-function scheduleIdleSweep(pool: OwnerPool) {
+function releaseOwnerIfEmpty(owner: object | undefined, pool: OwnerPool) {
+	if (owner && pool.sessions.size === 0 && pool.pending.size === 0) {
+		knownOwners.delete(owner);
+	}
+}
+
+function scheduleIdleSweep(owner: object | undefined, pool: OwnerPool) {
 	if (pool.idleTimer) return;
 	const timer = setInterval(() => {
 		const cutoff = Date.now() - SESSION_IDLE_TIMEOUT_MS;
@@ -276,6 +315,7 @@ function scheduleIdleSweep(pool: OwnerPool) {
 		if (pool.sessions.size > 0) return;
 		clearInterval(timer);
 		pool.idleTimer = undefined;
+		releaseOwnerIfEmpty(owner, pool);
 	}, SESSION_IDLE_TIMEOUT_MS);
 	// Never keep the Pi process alive just to sweep idle browser sessions.
 	timer.unref?.();
@@ -294,9 +334,11 @@ export async function acquireSession(
 	if (!page.webSocketDebuggerUrl) {
 		throw new Error(`Page has no webSocketDebuggerUrl: ${page.id}`);
 	}
+	options.signal?.throwIfAborted();
+	const debuggerUrl = page.webSocketDebuggerUrl;
 	const pool = poolFor(owner);
 	const existing = pool.sessions.get(page.id);
-	if (existing?.alive && existing.webSocketDebuggerUrl === page.webSocketDebuggerUrl) {
+	if (existing?.alive && existing.webSocketDebuggerUrl === debuggerUrl) {
 		existing.lastUsedAt = Date.now();
 		return existing;
 	}
@@ -305,37 +347,76 @@ export async function acquireSession(
 		pool.sessions.delete(page.id);
 	}
 
+	const pending = pool.pending.get(page.id);
+	if (pending && pending.url === debuggerUrl) {
+		const session = await waitForCaller(pending.promise, options.signal);
+		session.lastUsedAt = Date.now();
+		return session;
+	}
+
+	const generation = pool.generation;
+	const poolSignal = pool.controller.signal;
 	const connectOptions: CdpConnectOptions = {
-		signal: options.signal,
+		signal: poolSignal,
 		timeoutMs: options.timeoutMs,
 		webSocketConstructor: options.webSocketConstructor,
 		// A pooled connection is shared by later tool calls, so a chatty unsubscribed domain must
 		// drop its backlog instead of tearing the connection down.
 		eventBufferOverflow: "drop",
 	};
-	const client = await CdpClient.connect(page.webSocketDebuggerUrl, connectOptions);
-	const session = new PageSession(page.id, page.webSocketDebuggerUrl, client);
-	try {
-		await session.startRecording({ signal: options.signal, timeoutMs: options.timeoutMs });
-	} catch (error) {
-		session.close(error);
-		throw error;
-	}
-	pool.sessions.set(page.id, session);
-	scheduleIdleSweep(pool);
-	return session;
+	if (owner) knownOwners.add(owner);
+	const entry: { promise: Promise<PageSession>; url: string } = {
+		promise: undefined as unknown as Promise<PageSession>,
+		url: debuggerUrl,
+	};
+	// Publish the pending identity before the handshake can resolve, so a slower previous
+	// handshake for another URL observes that it is no longer current.
+	pool.pending.set(page.id, entry);
+	const opening = (async () => {
+		const client = await CdpClient.connect(debuggerUrl, connectOptions);
+		const session = new PageSession(page.id, debuggerUrl, client);
+		try {
+			await session.startRecording({ signal: poolSignal, timeoutMs: options.timeoutMs });
+			const stillCurrent = pool.generation === generation && pool.pending.get(page.id) === entry;
+			if (!stillCurrent) {
+				throw new Error("Chrome DevTools page session closed");
+			}
+			const superseded = pool.sessions.get(page.id);
+			if (superseded && superseded !== session) {
+				superseded.close(new Error("Chrome DevTools page session replaced"));
+			}
+			pool.sessions.set(page.id, session);
+			scheduleIdleSweep(owner, pool);
+			return session;
+		} catch (error) {
+			session.close(error);
+			throw error;
+		}
+	})();
+	entry.promise = opening;
+	const finish = () => {
+		if (pool.pending.get(page.id) === entry) pool.pending.delete(page.id);
+		releaseOwnerIfEmpty(owner, pool);
+	};
+	void opening.then(finish, finish);
+
+	return waitForCaller(opening, options.signal);
 }
 
-/** Run `callback` against a pooled session, keeping the connection open afterwards. */
+/** Select the page only after the caller's operation succeeds on its pooled session. */
 export async function withSession<T>(
 	page: DevToolsPage,
-	owner: object | undefined,
+	operation: ReturnType<typeof beginPageOperation>,
 	callback: (session: PageSession) => Promise<T>,
-	options: SessionOptions = {},
 ) {
-	const session = await acquireSession(page, owner, options);
+	const { sessionOwner, signal } = operation;
+	const session = await acquireSession(page, sessionOwner, { signal });
 	try {
-		return await callback(session);
+		signal.throwIfAborted();
+		const result = await callback(session);
+		signal.throwIfAborted();
+		setActivePageId(sessionOwner, page.id);
+		return result;
 	} finally {
 		session.lastUsedAt = Date.now();
 	}
@@ -343,28 +424,41 @@ export async function withSession<T>(
 
 export function peekSession(page: DevToolsPage | string, owner: object | undefined) {
 	const pageId = typeof page === "string" ? page : page.id;
-	const session = poolFor(owner).sessions.get(pageId);
+	const session = existingPoolFor(owner)?.sessions.get(pageId);
 	return session?.alive ? session : undefined;
 }
 
 export function closeSessions(owner: object | undefined, reason?: unknown) {
-	const pool = poolFor(owner);
+	if (owner) {
+		const message =
+			reason instanceof Error ? reason.message : "Chrome DevTools page session closed";
+		invalidatePageOperations(owner, message);
+	}
+	const pool = existingPoolFor(owner);
+	if (!pool) return;
+	pool.generation += 1;
+	pool.controller.abort(reason ?? new Error("Chrome DevTools page session closed"));
+	pool.controller = new AbortController();
+	pool.pending.clear();
 	for (const session of pool.sessions.values()) session.close(reason);
 	pool.sessions.clear();
-	if (!pool.idleTimer) return;
-	clearInterval(pool.idleTimer);
-	pool.idleTimer = undefined;
+	if (pool.idleTimer) {
+		clearInterval(pool.idleTimer);
+		pool.idleTimer = undefined;
+	}
+	if (owner) knownOwners.delete(owner);
 }
 
-/** Tear down every pooled connection; used on session replacement and extension shutdown. */
+/** Tear down every pooled connection; used on extension shutdown or test cleanup. */
 export function closeAllSessions(reason?: unknown) {
 	closeSessions(undefined, reason);
-	for (const owner of knownOwners) closeSessions(owner, reason);
+	for (const owner of [...knownOwners]) closeSessions(owner, reason);
 	knownOwners.clear();
 }
 
 export function sessionPoolStatus(owner: object | undefined) {
-	const pool = poolFor(owner);
+	const pool = existingPoolFor(owner);
+	if (!pool) return [];
 	return [...pool.sessions.values()]
 		.filter((session) => session.alive)
 		.map((session) => ({
@@ -484,10 +578,4 @@ function safeJson(value: unknown) {
 	} catch {
 		return String(value);
 	}
-}
-
-/** Exposed for the extension lifecycle: the global (ownerless) pool used by direct tool calls. */
-export function resetSessionPoolForTests() {
-	closeAllSessions(new Error("test reset"));
-	state.activePageId = undefined;
 }

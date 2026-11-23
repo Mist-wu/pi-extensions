@@ -130,21 +130,34 @@ test("browser status distinguishes unobserved, running, exited, and failed state
 	applyRuntimeWebMcpSetting(true, owner);
 	assert.match(
 		buildBrowserStatusMessage(owner),
-		/attached browser profiles.*authenticated sessions/u,
+		/external attached browser may contain everyday authenticated sessions/u,
 	);
 	applyRuntimeWebMcpSetting(false, owner);
 
-	state.managedBrowser = {
+	const running = {
 		process: {} as never,
 		userDataDir: "/tmp/test-profile",
+		persistentProfile: false,
+		keepAlive: false,
 		exited: false,
 		ready: true,
-		ownerGeneration: state.sessionGeneration,
 		sessionOwner: owner,
 	};
+	state.managedBrowser = running;
 	assert.match(buildBrowserStatusMessage(), /managed browser running/);
+	applyRuntimeWebMcpSetting(true, owner);
+	running.persistentProfile = true;
+	assert.match(buildBrowserStatusMessage(owner), /Browser custody: persistent managed profile/);
+	assert.match(
+		buildBrowserStatusMessage(owner),
+		/persistent managed profile may contain signed-in sessions/u,
+	);
+	running.persistentProfile = false;
+	assert.match(buildBrowserStatusMessage(owner), /Browser custody: temporary managed profile/);
+	assert.doesNotMatch(buildBrowserStatusMessage(owner), /WebMCP warning/u);
+	applyRuntimeWebMcpSetting(false, owner);
 
-	state.managedBrowser.exited = true;
+	running.exited = true;
 	state.lastLaunchAttempt = {
 		candidateLabels: ["Chromium"],
 		mode: "dynamic-port",
