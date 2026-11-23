@@ -1,11 +1,11 @@
 import { waitForCaller } from "./cancel-wait.js";
-import { CdpClient, type CdpConnectOptions, type CdpWebSocketConstructor } from "./cdp-client.js";
 import {
-	type DevToolsPage,
-	invalidatePageOperations,
-	type PageOperation,
-	pageOperationCurrent,
-} from "./runtime.js";
+	CdpClient,
+	type CdpConnectOptions,
+	type CdpWebSocketConstructor,
+	setActivePageId,
+} from "./cdp-client.js";
+import { type beginPageOperation, type DevToolsPage, invalidatePageOperations } from "./runtime.js";
 
 /**
  * Pooled, long-lived CDP sessions.
@@ -22,7 +22,6 @@ export const SESSION_IDLE_TIMEOUT_MS = 5 * 60_000;
 const RECORDED_DOMAINS = ["Page", "Runtime", "Log", "Network"] as const;
 
 export interface SessionOptions {
-	operation?: PageOperation;
 	signal?: AbortSignal;
 	timeoutMs?: number;
 	webSocketConstructor?: CdpWebSocketConstructor;
@@ -336,12 +335,6 @@ export async function acquireSession(
 		throw new Error(`Page has no webSocketDebuggerUrl: ${page.id}`);
 	}
 	options.signal?.throwIfAborted();
-	if (options.operation && !pageOperationCurrent(options.operation)) {
-		const reason = options.operation.signal.reason;
-		throw reason === undefined
-			? new DOMException("Chrome DevTools operation cancelled", "AbortError")
-			: reason;
-	}
 	const debuggerUrl = page.webSocketDebuggerUrl;
 	const pool = poolFor(owner);
 	const existing = pool.sessions.get(page.id);
@@ -401,30 +394,29 @@ export async function acquireSession(
 		}
 	})();
 	entry.promise = opening;
-	void opening.then(
-		() => {
-			if (pool.pending.get(page.id) === entry) pool.pending.delete(page.id);
-			releaseOwnerIfEmpty(owner, pool);
-		},
-		() => {
-			if (pool.pending.get(page.id) === entry) pool.pending.delete(page.id);
-			releaseOwnerIfEmpty(owner, pool);
-		},
-	);
+	const finish = () => {
+		if (pool.pending.get(page.id) === entry) pool.pending.delete(page.id);
+		releaseOwnerIfEmpty(owner, pool);
+	};
+	void opening.then(finish, finish);
 
 	return waitForCaller(opening, options.signal);
 }
 
-/** Run `callback` against a pooled session, keeping the connection open afterwards. */
+/** Select the page only after the caller's operation succeeds on its pooled session. */
 export async function withSession<T>(
 	page: DevToolsPage,
-	owner: object | undefined,
+	operation: ReturnType<typeof beginPageOperation>,
 	callback: (session: PageSession) => Promise<T>,
-	options: SessionOptions = {},
 ) {
-	const session = await acquireSession(page, owner, options);
+	const { sessionOwner, signal } = operation;
+	const session = await acquireSession(page, sessionOwner, { signal });
 	try {
-		return await callback(session);
+		signal.throwIfAborted();
+		const result = await callback(session);
+		signal.throwIfAborted();
+		setActivePageId(sessionOwner, page.id);
+		return result;
 	} finally {
 		session.lastUsedAt = Date.now();
 	}

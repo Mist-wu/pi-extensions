@@ -7,12 +7,9 @@ import {
 	withEndpointRetry,
 } from "./browser-manager.js";
 import {
-	assertPageOperationCurrent,
 	DEFAULT_ENDPOINT_WAIT_MS,
 	DEFAULT_TIMEOUT_MS,
 	type DevToolsPage,
-	type PageOperation,
-	pageOperationCurrent,
 	state,
 } from "./runtime.js";
 
@@ -66,7 +63,6 @@ const MAX_CDP_MESSAGE_BYTES = 8 * 1024 * 1024;
 const activePageIds = new WeakMap<object, string>();
 
 interface PageOperationOptions {
-	operation?: PageOperation;
 	sessionOwner?: object;
 	signal?: AbortSignal;
 	waitMs?: number;
@@ -74,19 +70,16 @@ interface PageOperationOptions {
 
 export async function listPages(options: PageOperationOptions = {}) {
 	const waitMs = options.waitMs ?? DEFAULT_ENDPOINT_WAIT_MS;
-	const signal = options.operation?.signal ?? options.signal;
-	assertPageOperationCurrent(options.operation);
+	const { signal } = options;
 	await ensureDevToolsEndpoint(waitMs, signal, options.sessionOwner);
-	assertPageOperationCurrent(options.operation);
 	return withEndpointRetry(
 		async () => {
-			assertPageOperationCurrent(options.operation);
 			const pages = await fetchDevToolsJson<DevToolsPage[]>(
 				"/json/list",
 				{ signal },
 				options.sessionOwner,
 			);
-			assertPageOperationCurrent(options.operation);
+			signal?.throwIfAborted();
 			return pages.filter((page) => page.type === "page" && page.webSocketDebuggerUrl);
 		},
 		waitMs,
@@ -103,6 +96,7 @@ export async function resolvePage(pageId?: string, options: PageOperationOptions
 	const pages = await listPages(options);
 	if (pageId) return requirePage(pageId, pages);
 
+	options.signal?.throwIfAborted();
 	const page = resolveDefaultPage(pages, options.sessionOwner);
 	if (!page) {
 		throw new Error(
@@ -124,6 +118,7 @@ export async function resolvePageForNavigation(
 	const pages = await listPages(options);
 	if (pageId) return { created: false, page: requirePage(pageId, pages) };
 
+	options.signal?.throwIfAborted();
 	const page = resolveDefaultPage(pages, options.sessionOwner);
 	if (page) return { created: false, page };
 
@@ -141,12 +136,7 @@ function resolveDefaultPage(pages: DevToolsPage[], owner?: object) {
 	return pages[0];
 }
 
-export function setActivePageId(
-	owner: object | undefined,
-	pageId: string | undefined,
-	operation?: PageOperation,
-) {
-	if (operation && !pageOperationCurrent(operation)) return;
+export function setActivePageId(owner: object | undefined, pageId: string | undefined) {
 	if (!owner) {
 		state.activePageId = pageId;
 		return;
@@ -172,10 +162,8 @@ function requirePage(pageId: string, pages: DevToolsPage[]) {
 
 export async function createPage(url: string, options: PageOperationOptions = {}) {
 	const waitMs = options.waitMs ?? DEFAULT_ENDPOINT_WAIT_MS;
-	const signal = options.operation?.signal ?? options.signal;
-	assertPageOperationCurrent(options.operation);
+	const { signal } = options;
 	await ensureDevToolsEndpoint(waitMs, signal, options.sessionOwner);
-	assertPageOperationCurrent(options.operation);
 	const page = await withEndpointRetry(
 		() =>
 			fetchDevToolsJson<DevToolsPage>(
@@ -186,7 +174,7 @@ export async function createPage(url: string, options: PageOperationOptions = {}
 		waitMs,
 		signal,
 	);
-	assertPageOperationCurrent(options.operation);
+	signal?.throwIfAborted();
 	if (page.type !== "page" || !page.webSocketDebuggerUrl) {
 		throw new Error("Chrome DevTools created a target that is not an inspectable page.");
 	}

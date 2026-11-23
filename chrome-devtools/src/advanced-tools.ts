@@ -1,6 +1,7 @@
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { formatPage, resolvePage, setActivePageId, textResult } from "./cdp-client.js";
+import { abortableSleep } from "./cancel-wait.js";
+import { formatPage, resolvePage, textResult } from "./cdp-client.js";
 import {
 	type ConsoleEntry,
 	type NetworkEntry,
@@ -16,7 +17,7 @@ import {
 	waitConditionScript,
 } from "./page-scripts.js";
 import { renderTextResult, renderToolCall, withStatus } from "./render.js";
-import { assertPageOperationCurrent, beginPageOperation, DEFAULT_TIMEOUT_MS } from "./runtime.js";
+import { beginPageOperation, DEFAULT_TIMEOUT_MS } from "./runtime.js";
 import { CHROME_DEVTOOLS_TOOL_NAMES } from "./tool-names.js";
 
 const MAX_BODY_CHARS = 20_000;
@@ -72,23 +73,10 @@ async function onPage<T>(
 	) => Promise<T>,
 ) {
 	const operation = beginPageOperation(ctx.sessionManager, signal);
-	const page = await resolvePage(pageId, {
-		operation,
-		sessionOwner: ctx.sessionManager,
-		signal: operation.signal,
-	});
-	const result = await withSession(
-		page,
-		ctx.sessionManager,
-		async (session) => {
-			assertPageOperationCurrent(operation);
-			return callback(session, formatPage(page), operation.signal);
-		},
-		{ operation, signal: operation.signal },
+	const page = await resolvePage(pageId, operation);
+	return withSession(page, operation, (session) =>
+		callback(session, formatPage(page), operation.signal),
 	);
-	assertPageOperationCurrent(operation);
-	setActivePageId(ctx.sessionManager, page.id, operation);
-	return result;
 }
 
 export const snapshotTool = defineTool({
@@ -316,7 +304,7 @@ export const waitForTool = defineTool({
 						});
 					}
 					const sleepMs = Math.min(WAIT_POLL_INTERVAL_MS, deadline - Date.now());
-					if (sleepMs > 0) await delay(sleepMs, signal);
+					if (sleepMs > 0) await abortableSleep(sleepMs, signal);
 				}
 				throw new Error(
 					`Timed out after ${timeoutMs}ms waiting for ${describeCondition(params)}. The page may not have reached that state.`,
@@ -813,23 +801,6 @@ function codeForCharacter(character: string) {
 	if (/^[a-zA-Z]$/.test(character)) return `Key${character.toUpperCase()}`;
 	if (/^[0-9]$/.test(character)) return `Digit${character}`;
 	return character;
-}
-
-function delay(ms: number, signal: AbortSignal | undefined) {
-	if (signal?.aborted) {
-		return Promise.reject(signal.reason ?? new DOMException("Wait aborted", "AbortError"));
-	}
-	return new Promise<void>((resolve, reject) => {
-		const timer = setTimeout(() => {
-			signal?.removeEventListener("abort", onAbort);
-			resolve();
-		}, ms);
-		const onAbort = () => {
-			clearTimeout(timer);
-			reject(signal?.reason ?? new DOMException("Wait aborted", "AbortError"));
-		};
-		signal?.addEventListener("abort", onAbort, { once: true });
-	});
 }
 
 export function matchesLevel(entry: ConsoleEntry, level: "all" | "error" | "warning" | "info") {

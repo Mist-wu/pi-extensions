@@ -203,7 +203,7 @@ async function requireStablePage(
 	}
 }
 
-function assertOperationCurrent(operation: WebMcpOperationIdentity) {
+export function assertOperationCurrent(operation: WebMcpOperationIdentity) {
 	operation.signal.throwIfAborted();
 	if (!webMcpOperationIsCurrent(operation)) {
 		throw new DOMException("The WebMCP operation became stale.", "AbortError");

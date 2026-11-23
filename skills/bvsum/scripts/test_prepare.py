@@ -84,21 +84,25 @@ class TranscriptPublishTest(unittest.TestCase):
             self.assertFalse(prefix.with_suffix(".srt").exists())
             self.assertEqual(prefix.with_suffix(".txt").read_text(encoding="utf-8"), "fresh\n")
 
-    def test_keyboard_interrupt_cleans_the_audio_workspace(self) -> None:
+    def test_legacy_journal_recovers_unrecorded_backup_and_resumes_partial_rollback(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
-            workspace = Path(raw) / "work"
-            workspace.mkdir()
-            wav = workspace / "audio.wav"
-            wav.write_bytes(b"RIFF")
-            try:
-                try:
-                    raise KeyboardInterrupt
-                finally:
-                    prepare.cleanup_audio_workspace(wav, workspace)
-            except KeyboardInterrupt:
-                pass
-            self.assertFalse(wav.exists())
-            self.assertFalse(workspace.exists())
+            prefix = Path(raw) / "BV1interrupted"
+            backup = prepare._backup_dir(prefix)
+            backup.mkdir()
+            (backup / "file.txt").write_text("old", encoding="utf-8")
+            prepare._write_journal(prepare._journal_path(prefix), {"phase": "staged", "movedToBackup": []})
+            prepare.recover_transcript_publish(prefix)
+            self.assertEqual(prefix.with_suffix(".txt").read_text(), "old")
+
+            # The TXT was already restored when rollback stopped. Only SRT is still in backup.
+            backup.mkdir()
+            (backup / "file.srt").write_text("old SRT", encoding="utf-8")
+            prefix.with_suffix(".vtt").write_text("partial install", encoding="utf-8")
+            prepare._write_journal(prepare._journal_path(prefix), {"phase": "backed-up", "backedUp": [".txt", ".srt"]})
+            prepare.recover_transcript_publish(prefix)
+            self.assertEqual(prefix.with_suffix(".txt").read_text(), "old")
+            self.assertEqual(prefix.with_suffix(".srt").read_text(), "old SRT")
+            self.assertFalse(prefix.with_suffix(".vtt").exists())
 
 
 if __name__ == "__main__":

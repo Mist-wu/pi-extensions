@@ -71,7 +71,7 @@ npm install
 npm run check
 ```
 
-`check` 会依次运行各 workspace 的检查（`chrome-devtools` 执行构建、lint、类型检查和单元测试；`websearch` 执行类型检查）。chrome-devtools 还有驱动真实 Chrome 的端到端测试：
+`check` 会依次运行各 workspace 的检查（`chrome-devtools` 执行构建、lint、类型检查和单元测试；`websearch` 执行类型检查和单元测试）。chrome-devtools 还有驱动真实 Chrome 的端到端测试：
 
 ```bash
 cd chrome-devtools && npm run smoke:e2e

@@ -20,7 +20,7 @@ function accountToken(): string {
 	return `header.${payload}.signature`;
 }
 
-function searchContext() {
+function searchContext(history: Array<{ role: string; content: string }> = []) {
 	return {
 		model: undefined,
 		modelRegistry: {
@@ -39,7 +39,7 @@ function searchContext() {
 				return "session-test";
 			},
 			getBranch() {
-				return [];
+				return history.map(message => ({ type: "message", message }));
 			},
 		},
 	};
@@ -86,6 +86,29 @@ async function withFetch<T>(
 }
 
 const query = { search_query: [{ q: "pi extensions" }] };
+
+test("search history starts with a user turn and ends at the current request", async () => {
+	const history = [
+		{ role: "assistant", content: "intro" },
+		{ role: "user", content: "first" },
+		{ role: "assistant", content: "answer" },
+		{ role: "user", content: "follow-up" },
+		{ role: "assistant", content: "after request" },
+	];
+	const cases = [
+		[1, undefined],
+		[3, ["first"]],
+		[5, ["first", "answer", "follow-up"]],
+	] as const;
+	for (const [length, expected] of cases) {
+		let input: Array<{ content: Array<{ text: string }> }> | undefined;
+		await withFetch(async (_url, init) => {
+			input = JSON.parse(String(init?.body)).input;
+			return jsonResponse({ output: "ok" });
+		}, tool => tool.execute("call", query, undefined, undefined, searchContext(history.slice(0, length))));
+		assert.deepEqual(input?.map(item => item.content[0].text), expected);
+	}
+});
 
 test("cancelling while the response body is read is not reported as invalid JSON", async () => {
 	const caller = new AbortController();

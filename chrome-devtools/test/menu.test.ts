@@ -141,7 +141,6 @@ test("browser status distinguishes unobserved, running, exited, and failed state
 		keepAlive: false,
 		exited: false,
 		ready: true,
-		ownerGeneration: state.sessionGeneration,
 		sessionOwner: owner,
 	};
 	state.managedBrowser = running;

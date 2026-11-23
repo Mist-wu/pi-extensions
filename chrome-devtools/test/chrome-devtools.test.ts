@@ -718,7 +718,6 @@ test("removing WebMCP gateway availability aborts active page work", async () =>
 		await mock.commands.get("chrome-devtools")?.handler("disable", ctx);
 		assert.equal(operation.signal.aborted, true);
 		assert.ok(WEBMCP_TOOLS.every((name) => !mock.rawPi.getActiveTools().includes(name)));
-		operation.dispose();
 	});
 });
 

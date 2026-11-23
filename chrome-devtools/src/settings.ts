@@ -127,7 +127,7 @@ interface SettingsDocumentResult {
 }
 
 const DEFAULT_FILE_OPERATIONS: SettingsFileOperations = {
-	write: (path, data) => writeFile(path, data, "utf8").then(() => undefined),
+	write: (path, data) => writeFile(path, data, "utf8"),
 	rename,
 };
 
@@ -145,22 +145,13 @@ export async function loadSettings(options: SettingsLoadOptions = {}): Promise<S
 	const warnings: string[] = [];
 
 	let user = await readSettingsDocument(userPath, "user");
-	const legacyExists = await fileExists(legacySettingsFilePath());
-	if (user.kind !== "missing" && legacyExists) {
-		warnings.push(
-			`Chrome DevTools legacy settings ignored: ${legacySettingsFilePath()} exists, but ${userPath} takes precedence. Delete ${LEGACY_SETTINGS_FILE_NAME} after confirming your settings.`,
-		);
-	}
+	let legacyIgnored = false;
 	if (user.kind === "missing") {
 		const legacy = await readSettingsDocument(legacySettingsFilePath(), "user");
 		const concurrentlyCreated = await readSettingsDocument(userPath, "user");
 		if (concurrentlyCreated.kind !== "missing") {
 			user = concurrentlyCreated;
-			if (legacy.kind !== "missing") {
-				warnings.push(
-					`Chrome DevTools legacy settings ignored: ${legacySettingsFilePath()} exists, but ${userPath} takes precedence. Delete ${LEGACY_SETTINGS_FILE_NAME} after confirming your settings.`,
-				);
-			}
+			legacyIgnored = legacy.kind !== "missing";
 		} else if (legacy.kind !== "missing") {
 			user = legacy;
 			if (legacy.kind === "valid") {
@@ -169,6 +160,13 @@ export async function loadSettings(options: SettingsLoadOptions = {}): Promise<S
 				);
 			}
 		}
+	} else {
+		legacyIgnored = await fileExists(legacySettingsFilePath());
+	}
+	if (legacyIgnored) {
+		warnings.push(
+			`Chrome DevTools legacy settings ignored: ${legacySettingsFilePath()} exists, but ${userPath} takes precedence. Delete ${LEGACY_SETTINGS_FILE_NAME} after confirming your settings.`,
+		);
 	}
 	warnings.push(...user.warnings);
 
@@ -188,7 +186,7 @@ export async function loadSettings(options: SettingsLoadOptions = {}): Promise<S
 			`Chrome DevTools browser.keepAlive is ignored without browser.userDataDir in ${userPath}; a browser that outlives the session would strand its temporary profile.`,
 		);
 	}
-	const settings = resolveSettings(user.normalized, project.normalized, effectiveBrowser);
+	const settings = resolveSettings(user.normalized, effectiveBrowser);
 	const recognized =
 		settings.tools !== undefined ||
 		user.normalized?.browser !== undefined ||
@@ -223,7 +221,6 @@ export async function loadSettings(options: SettingsLoadOptions = {}): Promise<S
 
 function resolveSettings(
 	user: NormalizedSettingsDocument | undefined,
-	_project: NormalizedSettingsDocument | undefined,
 	browser: EffectiveBrowserSettings,
 ): ResolvedChromeDevToolsSettings {
 	return {
@@ -545,10 +542,13 @@ export function parseConfiguredPort(value: string | undefined) {
 	return port;
 }
 
-function formatBrowserEndpoint(host: string, port: number) {
-	const formattedHost =
-		host.startsWith("[") && host.endsWith("]") ? host : host.includes(":") ? `[${host}]` : host;
-	return `http://${formattedHost}:${port}`;
+export function formatHostForUrl(host: string) {
+	if (host.startsWith("[") && host.endsWith("]")) return host;
+	return host.includes(":") ? `[${host}]` : host;
+}
+
+export function formatBrowserEndpoint(host: string, port: number) {
+	return `http://${formatHostForUrl(host)}:${port}`;
 }
 
 export function normalizeChromeDevtoolsSettings(

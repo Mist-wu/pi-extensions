@@ -284,8 +284,6 @@ test("WebMCP enablement, exposure, and invalidation are scoped to the session ma
 	assert.equal(webMcpEnabled(second), false);
 	assert.ok(WEBMCP_TOOL_NAMES.every((name) => firstPi.rawPi.getActiveTools().includes(name)));
 	assert.ok(WEBMCP_TOOL_NAMES.every((name) => !secondPi.rawPi.getActiveTools().includes(name)));
-	firstOperation.dispose();
-	secondOperation.dispose();
 });
 
 test("model replacement invalidates every prior WebMCP identity and active operation", async () => {
@@ -303,7 +301,6 @@ test("model replacement invalidates every prior WebMCP identity and active opera
 		);
 		assert.equal(operation.signal.aborted, true);
 		assert.ok(currentWebMcpGeneration(owner) > generation);
-		operation.dispose();
 	});
 });
 
@@ -363,7 +360,6 @@ test("session_shutdown clears status and releases an owned browser once", async 
 			keepAlive: false,
 			exited: false,
 			ready: true,
-			ownerGeneration: state.sessionGeneration,
 			sessionOwner: sessionOwner(ctx),
 		};
 		chromeDevtools(mock.pi);

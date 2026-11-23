@@ -11,7 +11,7 @@ import {
 	sessionPoolStatus,
 	withSession,
 } from "../src/cdp-session.js";
-import type { DevToolsPage } from "../src/runtime.js";
+import { beginPageOperation, type DevToolsPage } from "../src/runtime.js";
 
 const PAGE: DevToolsPage = {
 	id: "page-1",
@@ -309,7 +309,7 @@ test("withSession refreshes the idle clock and reports pool status", async () =>
 		first.lastUsedAt = 0;
 
 		const seen: PageSession[] = [];
-		await withSession(PAGE, owner, async (session) => {
+		await withSession(PAGE, beginPageOperation(owner), async (session) => {
 			seen.push(session);
 		});
 

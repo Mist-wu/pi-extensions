@@ -319,54 +319,32 @@ def _write_journal(path: Path, payload: dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
-def _read_journal(path: Path) -> dict[str, Any] | None:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    return payload if isinstance(payload, dict) else None
-
-
 def recover_transcript_publish(prefix: Path) -> None:
-    """Finish or roll back an interrupted publish so a flat transcript set is never mixed."""
+    """Finish or roll back an interrupted publish, even if an earlier rollback was interrupted."""
     journal_path = _journal_path(prefix)
-    if not journal_path.exists():
+    try:
+        journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
         return
-    journal = _read_journal(journal_path)
-    if journal is None:
-        journal_path.unlink(missing_ok=True)
-        return
-    backup = Path(str(journal.get("backup") or _backup_dir(prefix)))
-    phase = str(journal.get("phase") or "")
-    backed_up = [str(suffix) for suffix in journal.get("backedUp") or []]
-    if phase == "installed":
-        shutil.rmtree(backup, ignore_errors=True)
-        journal_path.unlink(missing_ok=True)
-        return
-    if phase == "staged":
-        moved = [str(suffix) for suffix in journal.get("movedToBackup") or []]
-        for suffix in moved:
+    phase = journal["phase"]
+    if phase not in ("staged", "backed-up", "installing", "installed"):
+        raise ValueError(f"无法识别字稿恢复日志：{journal_path}")
+    backup = _backup_dir(prefix)
+    if phase != "installed":
+        for suffix in TRANSCRIPT_SUFFIXES:
             source = backup / f"file{suffix}"
+            target = prefix.with_suffix(suffix)
             if source.exists():
-                replace_file(source, prefix.with_suffix(suffix))
-        shutil.rmtree(backup, ignore_errors=True)
-        journal_path.unlink(missing_ok=True)
-        return
-    # backed-up or installing: the previous complete set is the only safe result.
-    for suffix in TRANSCRIPT_SUFFIXES:
-        prefix.with_suffix(suffix).unlink(missing_ok=True)
-    for suffix in backed_up:
-        source = backup / f"file{suffix}"
-        if source.exists():
-            replace_file(source, prefix.with_suffix(suffix))
+                replace_file(source, target)
+            elif phase != "staged" and suffix not in journal["backedUp"]:
+                # This format had no previous file. Remove a partially installed replacement.
+                target.unlink(missing_ok=True)
     shutil.rmtree(backup, ignore_errors=True)
-    journal_path.unlink(missing_ok=True)
+    journal_path.unlink()
 
 
 def existing_transcript(prefix: Path) -> Path | None:
     recover_transcript_publish(prefix)
-    if _journal_path(prefix).exists():
-        return None
     txt = prefix.with_suffix(".txt")
     return txt if txt.exists() and txt.stat().st_size > 0 else None
 
@@ -387,51 +365,17 @@ def publish_transcript(prefix: Path, staged_prefix: Path) -> dict[str, Path]:
     if backup.exists():
         shutil.rmtree(backup)
     backup.mkdir(parents=True)
-    _write_journal(journal_path, {
-        "phase": "staged",
-        "backup": str(backup),
-        "suffixes": list(produced),
-        "movedToBackup": [],
-        "backedUp": [],
-    })
-    backed_up: list[str] = []
-    for suffix in TRANSCRIPT_SUFFIXES:
-        current = prefix.with_suffix(suffix)
-        if not current.exists():
-            continue
-        replace_file(current, backup / f"file{suffix}")
-        backed_up.append(suffix)
-        _write_journal(journal_path, {
-            "phase": "staged",
-            "backup": str(backup),
-            "suffixes": list(produced),
-            "movedToBackup": backed_up,
-            "backedUp": backed_up,
-        })
-    _write_journal(journal_path, {
-        "phase": "backed-up",
-        "backup": str(backup),
-        "suffixes": list(produced),
-        "backedUp": backed_up,
-    })
+    backed_up = [suffix for suffix in TRANSCRIPT_SUFFIXES if prefix.with_suffix(suffix).exists()]
+    _write_journal(journal_path, {"phase": "staged", "movedToBackup": backed_up})
+    for suffix in backed_up:
+        replace_file(prefix.with_suffix(suffix), backup / f"file{suffix}")
+    _write_journal(journal_path, {"phase": "backed-up", "backedUp": backed_up})
     for suffix, source in produced.items():
         replace_file(source, prefix.with_suffix(suffix))
-    _write_journal(journal_path, {
-        "phase": "installed",
-        "backup": str(backup),
-        "suffixes": list(produced),
-        "backedUp": backed_up,
-    })
+    _write_journal(journal_path, {"phase": "installed"})
     shutil.rmtree(backup, ignore_errors=True)
     journal_path.unlink(missing_ok=True)
     return {suffix: prefix.with_suffix(suffix) for suffix in produced}
-
-
-def cleanup_audio_workspace(wav_audio: Path | None, workspace: Path | None) -> None:
-    if wav_audio is not None:
-        wav_audio.unlink(missing_ok=True)
-    if workspace is not None:
-        shutil.rmtree(workspace, ignore_errors=True)
 
 
 def transcribe(wav: Path, workspace: Path, prefix_name: str, language: str, backend_request: str, log_path: Path) -> tuple[str, Path]:
@@ -589,10 +533,8 @@ def main() -> int:
                 audio_path, duration = save_audio(bvid, cid, page, page_number, prefix)
                 page_result["audio_path"] = str(audio_path)
                 page_result["audio_duration_seconds"] = round(duration, 3)
-                wav_audio: Path | None = None
-                workspace: Path | None = None
-                try:
-                    workspace = Path(tempfile.mkdtemp(prefix=f".{prefix.name}.bvsum-work-", dir=output_dir))
+                with tempfile.TemporaryDirectory(prefix=f".{prefix.name}.bvsum-work-", dir=output_dir) as work_dir:
+                    workspace = Path(work_dir)
                     wav_audio = workspace / "audio.wav"
                     convert_to_wav(audio_path, wav_audio)
                     used_backend, staged_prefix = transcribe(
@@ -604,17 +546,12 @@ def main() -> int:
                         prefix.with_suffix(".transcribe.log"),
                     )
                     published = publish_transcript(prefix, staged_prefix)
-                finally:
-                    cleanup_audio_workspace(wav_audio, workspace)
 
-                transcript_path = published.get(".txt")
-                if transcript_path is None or not transcript_path.exists():
-                    raise RuntimeError("转录进程结束但未生成 TXT")
                 page_result.update({
                     "source": "machine-transcript",
                     "backend": used_backend,
                     "language": args.language,
-                    "transcript_path": str(transcript_path),
+                    "transcript_path": str(published[".txt"]),
                     "srt_path": str(published[".srt"]) if ".srt" in published else None,
                 })
                 manifest["pages"].append(page_result)

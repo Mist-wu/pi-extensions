@@ -318,7 +318,6 @@ test("caller cancellation leaves the shared managed-browser launch available to 
 		const operation = beginWebMcpOperation(owner);
 		await shutdownManagedBrowser(undefined, { owner });
 		assert.equal(operation.signal.aborted, true);
-		operation.dispose();
 	} finally {
 		releaseReadiness?.();
 		await shutdownManagedBrowser(undefined, { owner });
@@ -446,8 +445,6 @@ test("managed browsers and shutdown stay scoped to each session manager", async 
 		assert.equal(managedBrowserForOwner(firstOwner), undefined);
 		assert.equal(managedBrowserForOwner(secondOwner)?.ready, true);
 		assert.deepEqual(removed, ["/tmp/session-profile-1"]);
-		firstOperation.dispose();
-		secondOperation.dispose();
 	} finally {
 		await shutdownManagedBrowser(undefined, { owner: firstOwner });
 		await shutdownManagedBrowser(undefined, { owner: secondOwner });

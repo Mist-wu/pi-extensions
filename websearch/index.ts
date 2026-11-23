@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	DEFAULT_MAX_BYTES,
@@ -137,8 +138,7 @@ const WEB_SEARCH_DESCRIPTION = [
 ].join("\n");
 
 type SearchResponse = {
-	encrypted_output?: string | null;
-	output?: string;
+	output: string;
 	results?: unknown[];
 };
 
@@ -158,17 +158,11 @@ type SearchDetails = {
 	truncated?: boolean;
 };
 
-function decodeBase64Url(value: string): string {
-	const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
-	const padding = "=".repeat((4 - (normalized.length % 4)) % 4);
-	return Buffer.from(normalized + padding, "base64").toString("utf8");
-}
-
 function accountIdFromToken(token: string): string {
 	try {
 		const parts = token.split(".");
 		if (parts.length !== 3) throw new Error("invalid JWT");
-		const payload = JSON.parse(decodeBase64Url(parts[1])) as Record<string, unknown>;
+		const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as Record<string, unknown>;
 		const auth = payload[JWT_CLAIM_PATH] as Record<string, unknown> | undefined;
 		const accountId = auth?.chatgpt_account_id;
 		if (typeof accountId !== "string" || accountId.length === 0) throw new Error("missing account ID");
@@ -229,33 +223,22 @@ function truncateUtf8ToBytes(value: string, maxBytes: number): string {
 
 function recentSearchInput(ctx: ExtensionContext): unknown[] | undefined {
 	const entries = ctx.sessionManager.getBranch() as Array<{ type?: string; message?: unknown }>;
-	const visible = entries
-		.filter((entry) => entry.type === "message")
-		.map((entry) => textFromMessage(entry.message))
-		.filter((item): item is { role: "user" | "assistant"; text: string } => Boolean(item));
-
-	let latestUserIndex = -1;
-	for (let index = visible.length - 1; index >= 0; index--) {
-		if (visible[index].role === "user") {
-			latestUserIndex = index;
-			break;
-		}
+	const selected = [];
+	let users = 0;
+	for (let index = entries.length - 1; index >= 0 && users < 2; index--) {
+		const entry = entries[index];
+		const item = entry.type === "message" ? textFromMessage(entry.message) : undefined;
+		if (!item) continue;
+		if (item.role === "user") users++;
+		if (users > 0) selected.push(item);
 	}
-	if (latestUserIndex < 0) return undefined;
+	if (users === 0) return undefined;
+	// With no previous user turn, omit assistant text before the current request.
+	if (users === 1) selected.length = 1;
 
-	let firstRetainedUserIndex = latestUserIndex;
-	let seenUsers = 0;
-	for (let index = latestUserIndex; index >= 0; index--) {
-		if (visible[index].role !== "user") continue;
-		seenUsers++;
-		firstRetainedUserIndex = index;
-		if (seenUsers === 2) break;
-	}
-
-	const selected = visible.slice(firstRetainedUserIndex, latestUserIndex + 1);
 	let remainingAssistantTokens = ASSISTANT_CONTEXT_TOKEN_LIMIT;
 	const input: unknown[] = [];
-	for (const item of selected) {
+	for (const item of selected.reverse()) {
 		let text = item.text;
 		if (item.role === "assistant") {
 			if (remainingAssistantTokens <= 0) continue;
@@ -274,7 +257,7 @@ function recentSearchInput(ctx: ExtensionContext): unknown[] | undefined {
 			content: [{ type: item.role === "user" ? "input_text" : "output_text", text }],
 		});
 	}
-	return input.length > 0 ? input : undefined;
+	return input;
 }
 
 function findPattern(header: string): string | undefined {
@@ -407,8 +390,8 @@ function readSearchRuntimeConfig(env: Record<string, string | undefined> = proce
 	};
 }
 
-function retryDelayMs(response: Response, attempt: number): number {
-	const retryAfter = response.headers.get("retry-after");
+function retryDelayMs(response: Response | undefined, attempt: number): number {
+	const retryAfter = response?.headers.get("retry-after");
 	if (retryAfter) {
 		const seconds = Number(retryAfter);
 		if (Number.isFinite(seconds)) return Math.min(Math.max(0, seconds * 1_000), 30_000);
@@ -416,21 +399,6 @@ function retryDelayMs(response: Response, attempt: number): number {
 		if (!Number.isNaN(date)) return Math.min(Math.max(0, date - Date.now()), 30_000);
 	}
 	return 1_000 * 2 ** attempt;
-}
-
-async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-	if (signal?.aborted) throw new Error("Web search cancelled");
-	await new Promise<void>((resolve, reject) => {
-		const timer = setTimeout(() => {
-			signal?.removeEventListener("abort", onAbort);
-			resolve();
-		}, ms);
-		const onAbort = () => {
-			clearTimeout(timer);
-			reject(new Error("Web search cancelled"));
-		};
-		signal?.addEventListener("abort", onAbort, { once: true });
-	});
 }
 
 function safeErrorBody(text: string): string {
@@ -451,11 +419,12 @@ async function requestSearch(
 	accountId: string,
 	body: Record<string, unknown>,
 	signal?: AbortSignal,
-): Promise<SearchResponse> {
-	for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+): Promise<Response> {
+	const payload = JSON.stringify(body);
+	for (let attempt = 0; ; attempt++) {
 		const timeoutSignal = AbortSignal.timeout(120_000);
 		const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-		let response: Response;
+		let response: Response | undefined;
 		try {
 			response = await fetch(endpoint, {
 				method: "POST",
@@ -466,43 +435,42 @@ async function requestSearch(
 					originator: "pi",
 					"user-agent": "pi-codex-web-search/1.0",
 				},
-				body: JSON.stringify(body),
+				body: payload,
 				signal: requestSignal,
 			});
 		} catch (error) {
 			if (signal?.aborted) throw new Error("Web search cancelled");
-			if (attempt < MAX_RETRIES) {
-				await sleep(1_000 * 2 ** attempt, signal);
-				continue;
+			if (attempt === MAX_RETRIES) {
+				throw new Error(`Codex web search network error: ${error instanceof Error ? error.message : String(error)}`);
 			}
-			throw new Error(`Codex web search network error: ${error instanceof Error ? error.message : String(error)}`);
 		}
-
-		if (response.ok) {
+		if (response?.ok) return response;
+		if (response) {
+			const errorText = safeErrorBody(await response.text().catch(() => ""));
+			if (attempt === MAX_RETRIES || (response.status !== 429 && response.status < 500)) {
+				throw new Error(`Codex web search failed (${response.status}): ${errorText || response.statusText}`);
+			}
+		}
+		try {
+			await delay(retryDelayMs(response, attempt), undefined, { signal });
+		} catch (error) {
 			if (signal?.aborted) throw new Error("Web search cancelled");
-			let payload: unknown;
-			try {
-				payload = await response.json();
-			} catch (error) {
-				if (signal?.aborted) throw new Error("Web search cancelled");
-				throw new Error(
-					`Codex web search returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
-				);
-			}
-			if (!isSearchPayload(payload)) {
-				throw new Error("Codex web search returned no text output");
-			}
-			return payload;
+			throw error;
 		}
-
-		const errorText = safeErrorBody(await response.text().catch(() => ""));
-		if (attempt < MAX_RETRIES && (response.status === 429 || response.status >= 500)) {
-			await sleep(retryDelayMs(response, attempt), signal);
-			continue;
-		}
-		throw new Error(`Codex web search failed (${response.status}): ${errorText || response.statusText}`);
 	}
-	throw new Error("Codex web search failed after retries");
+}
+
+async function readSearchResponse(response: Response, signal?: AbortSignal): Promise<SearchResponse> {
+	if (signal?.aborted) throw new Error("Web search cancelled");
+	let payload: unknown;
+	try {
+		payload = await response.json();
+	} catch (error) {
+		if (signal?.aborted) throw new Error("Web search cancelled");
+		throw new Error(`Codex web search returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
+	}
+	if (!isSearchPayload(payload)) throw new Error("Codex web search returned no text output");
+	return payload;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -547,7 +515,8 @@ export default function (pi: ExtensionAPI) {
 			const input = recentSearchInput(ctx);
 			if (input) body.input = input;
 
-			const response = await requestSearch(endpoint, token, accountId, body, signal);
+			const httpResponse = await requestSearch(endpoint, token, accountId, body, signal);
+			const response = await readSearchResponse(httpResponse, signal);
 			let output = response.output || JSON.stringify(response.results ?? [], null, 2);
 			if (commands.find) output = focusFindResults(output);
 			const truncation = truncateHead(output, {

@@ -1,3 +1,5 @@
+import { setTimeout as delay } from "node:timers/promises";
+
 /**
  * Wait for a shared operation without letting one caller's cancellation abort the others.
  * The caller receives their own abort reason, the abort listener is removed on settle, and the
@@ -7,18 +9,17 @@ export function waitForCaller<T>(operation: Promise<T>, signal?: AbortSignal): P
 	if (!signal) return operation;
 	signal.throwIfAborted();
 	return new Promise<T>((resolve, reject) => {
-		let settled = false;
-		const onAbort = () => settle(() => reject(signal.reason));
-		const settle = (callback: () => void) => {
-			if (settled) return;
-			settled = true;
-			signal.removeEventListener("abort", onAbort);
-			callback();
-		};
+		const onAbort = () => reject(signal.reason);
 		signal.addEventListener("abort", onAbort, { once: true });
-		operation.then(
-			(value) => settle(() => resolve(value)),
-			(error) => settle(() => reject(error)),
-		);
+		operation.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
 	});
+}
+
+export async function abortableSleep(ms: number, signal?: AbortSignal) {
+	try {
+		await delay(ms, undefined, { signal });
+	} catch (error) {
+		signal?.throwIfAborted();
+		throw error;
+	}
 }

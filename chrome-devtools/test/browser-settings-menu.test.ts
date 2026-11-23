@@ -215,7 +215,6 @@ test("WebMCP settings toggle the experimental gate, tool exposure, and active op
 		]);
 		assert.ok(WEBMCP_TOOL_NAMES.every((name) => !mockPi.rawPi.getActiveTools().includes(name)));
 		assert.match(notifications.at(-1)?.message ?? "", /WebMCP disabled/i);
-		operation.dispose();
 
 		tui.press("ctrl+c");
 		await running;
@@ -285,7 +284,6 @@ test("a successful browser setting closes only the extension-owned managed brows
 			keepAlive: false,
 			exited: false,
 			ready: true,
-			ownerGeneration: state.sessionGeneration,
 			sessionOwner: sessionOwner(ctx),
 		};
 		const running = showChromeDevtoolsBrowserSettings(createMockPi().pi, ctx);

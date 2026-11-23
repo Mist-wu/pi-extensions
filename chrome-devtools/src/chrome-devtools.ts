@@ -289,7 +289,6 @@ export function commandCompletions(prefix: string) {
 }
 
 export {
-	formatHostForUrl,
 	isLocalDevToolsHost,
 	quoteCommandPart,
 } from "./browser-manager.js";
@@ -301,7 +300,7 @@ export {
 	resolveScreenshotPath,
 	selectAllowedRoot,
 } from "./screenshot.js";
-export { normalizeChromeDevtoolsSettings } from "./settings.js";
+export { formatHostForUrl, normalizeChromeDevtoolsSettings } from "./settings.js";
 export {
 	orderedChromeDevtoolsTools,
 	sanitizeChromeDevtoolsDisplay,
